@@ -151,7 +151,7 @@ function runExport() {
 
 document.getElementById("input").value = SAMPLE;
 document.getElementById("lookup").addEventListener("click", runLookup);
-document.getElementById("output").addEventListener("click", runExport);
+document.getElementById("download").addEventListener("click", runExport);
 document.getElementById("include-missing").addEventListener("change", updatePreview);
 
 fetch(GUIDE_URL)

@@ -60,7 +60,10 @@ A user with a stack of unknown boards enters/scans their module numbers. The app
 - [x] Three-column layout (input · results · export)
 - [x] Export: plain-text list grouped by option, optional missing boards (marked),
       timestamped, downloadable
-- [ ] Curated option→system map (make system suggestion precise) — needs sources
+- [ ] Curated option→system map (make system suggestion precise) — needs sources.
+      Note: current heuristic hints don't distinguish a **system** (CPU/computer) from a
+      **peripheral** (e.g. RK06 is a disk drive), so drives appear alongside computers.
+      Fixing this needs the functional taxonomy (Phase 3) + the option→system map.
 - [ ] Add a favicon (currently 404s)
 - [ ] Third-party option list is parsed but not yet surfaced (no module to look up)
 - [ ] **Quantities & set allocation.** Duplicate board numbers count as separate copies
