@@ -63,6 +63,11 @@ A user with a stack of unknown boards enters/scans their module numbers. The app
 - [ ] Curated option→system map (make system suggestion precise) — needs sources
 - [ ] Add a favicon (currently 404s)
 - [ ] Third-party option list is parsed but not yet surfaced (no module to look up)
+- [ ] **Quantities & set allocation.** Duplicate board numbers count as separate copies
+      (default: treat each as unique). Given the per-board quantities for an option, pack
+      them into as many **complete sets** as possible, then form the remainder into
+      partial sets that are as complete as possible. Show the set breakdown (e.g. "2 full
+      sets + 2 partial") in the center column and the export.
 
 ### Phase 2 — image recognition
 - [ ] Capture / upload a board photo
