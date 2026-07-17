@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Field guide — pdp8.se</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, sans-serif; max-width: 52rem; margin: 2rem auto;
+           padding: 0 1rem; line-height: 1.5; }
+    h1 { margin-bottom: 0.2rem; }
+    .lede { margin-top: 0; color: #666; }
+    textarea { width: 100%; min-height: 8rem; font-family: ui-monospace, monospace;
+               font-size: 0.95rem; padding: 0.5rem; box-sizing: border-box; }
+    button { font-size: 1rem; padding: 0.5rem 1rem; margin-top: 0.5rem; cursor: pointer; }
+    #status { color: #666; font-size: 0.9rem; }
+    .option { border: 1px solid #ccc; border-radius: 8px; padding: 0.75rem 1rem;
+              margin: 1rem 0; }
+    .option > h2 { margin: 0 0 0.25rem; font-size: 1.1rem; }
+    .badge { display: inline-block; font-size: 0.75rem; font-weight: 600;
+             padding: 0.1rem 0.5rem; border-radius: 999px; margin-left: 0.5rem;
+             vertical-align: middle; }
+    .badge.complete { background: #1b7f37; color: #fff; }
+    .badge.partial  { background: #b06a00; color: #fff; }
+    .badge.bus      { background: #eee; color: #333; }
+    .mod { margin: 0.35rem 0; }
+    .mod .num { font-family: ui-monospace, monospace; font-weight: 600; }
+    .mod .desc { color: #444; }
+    .mod.missing { opacity: 0.6; }
+    .mod.missing .num::after { content: " — missing"; font-weight: 400; font-style: italic; }
+    .unknown { color: #b00; }
+    .hints { background: #f5f5f5; border-radius: 8px; padding: 0.5rem 1rem; margin: 1rem 0; }
+    .hints h2 { font-size: 1rem; margin: 0.25rem 0; }
+    @media (prefers-color-scheme: dark) {
+      .lede, #status, .mod .desc { color: #aaa; }
+      .option { border-color: #444; }
+      .badge.bus { background: #333; color: #ddd; }
+      .hints { background: #1e1e1e; }
+    }
+  </style>
+</head>
+<body>
+  <h1>Field guide</h1>
+  <p class="lede">Identify PDP-11 / VAX Q-bus and UNIBUS boards from their module numbers.</p>
+
+  <p>Paste module numbers, one per line (revision suffixes like <code>-YA</code> are OK):</p>
+  <textarea id="input" spellcheck="false"></textarea>
+  <div><button id="lookup">Look up</button></div>
+  <p id="status">Loading field guide…</p>
+
+  <div id="results"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
