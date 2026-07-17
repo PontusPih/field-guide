@@ -2,9 +2,9 @@
 
 // Field guide app — DOM + fetch. All parsing/lookup logic lives in core.js.
 
-import { parseGuide, resolve, group, systemHints, busLabel } from "./core.js";
+import { parseGuide, resolve, group, systemHints, busLabel, buildExport } from "./core.js";
 
-const GUIDE_URL = "field-guide-99.txt";
+const GUIDE_URL = "field-guide-02.txt";
 
 // A demo stack showing the main cases:
 //  - a complete multi-module option (RK611 = M7900..M7904)
@@ -20,7 +20,8 @@ const SAMPLE = [
   "M9999",
 ].join("\n");
 
-let idx = null;   // { entries, byModule, byBase, byOption }
+let idx = null;            // { entries, byModule, byBase, byOption }
+let lastResolved = [];     // result of the most recent lookup (for export)
 
 // --- rendering ----------------------------------------------------------
 
@@ -105,14 +106,53 @@ function render(resolvedList) {
 
 function runLookup() {
   const raw = document.getElementById("input").value.split(/\r?\n/);
-  const resolvedList = raw.map((q) => resolve(idx, q)).filter(Boolean);
-  render(resolvedList);
+  lastResolved = raw.map((q) => resolve(idx, q)).filter(Boolean);
+  render(lastResolved);
+  updatePreview();
+}
+
+// Current export text (also what the Output button downloads).
+function currentExport() {
+  const includeMissing = document.getElementById("include-missing").checked;
+  return buildExport(idx, lastResolved, { includeMissing, exportedAt: timestamp() });
+}
+
+function updatePreview() {
+  if (!idx) return;
+  document.getElementById("export-preview").textContent = currentExport();
+}
+
+// --- export -------------------------------------------------------------
+
+function pad2(n) { return String(n).padStart(2, "0"); }
+function timestamp() {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ` +
+    `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+function downloadText(filename, text) {
+  const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function runExport() {
+  if (!idx) return;
+  downloadText("field-guide-export.txt", currentExport());
 }
 
 // --- boot ---------------------------------------------------------------
 
 document.getElementById("input").value = SAMPLE;
 document.getElementById("lookup").addEventListener("click", runLookup);
+document.getElementById("output").addEventListener("click", runExport);
+document.getElementById("include-missing").addEventListener("change", updatePreview);
 
 fetch(GUIDE_URL)
   .then((r) => { if (!r.ok) throw new Error(r.status); return r.text(); })
