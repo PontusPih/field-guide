@@ -56,6 +56,7 @@ let panStart = null; // { px, py, vx, vy }
 let selectCandidateId = null;
 let pointerDownDisplayPos = null;
 let hoverDeleteId = null; // id of the box whose delete-X is currently shown
+let hoverBoxId = null; // id of the box the cursor is currently over (declutter: reveals full label)
 
 function rotatedCanvas(image, rotationDeg) {
   const c = document.createElement("canvas");
@@ -129,24 +130,21 @@ function strokeBoxPath(box) {
   ctx.closePath();
 }
 
-function drawDetection(detection) {
-  const color = colorFor(detection);
-  const isSelected = detection.id === selectedId;
-  const isPending = detection.score == null;
+// Canvas hover label: text only, no score — the score is still available in
+// the results list, which is the place for full detail.
+function canvasLabelFor(detection) {
+  if (detection.score != null) return detection.text;
+  return detection.attempted ? "no text found" : "not yet recognized";
+}
 
-  strokeBoxPath(detection.box);
-  ctx.setLineDash(isPending ? [6, 4] : []);
-  ctx.lineWidth = isSelected ? 4 : 2;
-  ctx.strokeStyle = isSelected ? "#3498db" : color;
-  ctx.stroke();
-  ctx.setLineDash([]);
+function listLabelFor(detection) {
+  if (detection.score != null) return `${detection.text}  (score ${detection.score.toFixed(3)})`;
+  return detection.attempted ? "no text found" : "not yet recognized";
+}
 
-  const label = detection.score != null
-    ? `${detection.text} (${detection.score.toFixed(2)})`
-    : detection.attempted ? "no text found" : "?";
-  const topLeft = toDisplay({ x: detection.box[0][0], y: detection.box[0][1] }, view);
+function drawLabelText(text, color, topLeft) {
   ctx.font = "14px sans-serif";
-  const metrics = ctx.measureText(label);
+  const metrics = ctx.measureText(text);
   const labelHeight = 16;
   const spaceAbove = topLeft.y - 6;
   // Fallback stays anchored to the box's own position (not a fixed canvas
@@ -155,8 +153,33 @@ function drawDetection(detection) {
   const labelY = spaceAbove >= labelHeight ? spaceAbove : topLeft.y + labelHeight + 4;
   ctx.fillStyle = "rgba(0, 0, 0, 0.65)";
   ctx.fillRect(topLeft.x - 2, labelY - 13, metrics.width + 4, 16);
-  ctx.fillStyle = isSelected ? "#3498db" : color;
-  ctx.fillText(label, topLeft.x, labelY);
+  ctx.fillStyle = color;
+  ctx.fillText(text, topLeft.x, labelY);
+}
+
+// Default view stays uncluttered — just a colored outline plus a small
+// numbered badge. Full text+score only shows for the hovered or selected
+// box; everything is always visible in the results list regardless.
+function drawDetection(detection, index) {
+  const color = colorFor(detection);
+  const isSelected = detection.id === selectedId;
+  const isHovered = detection.id === hoverBoxId;
+  const isPending = detection.score == null;
+  const showFullLabel = isSelected || isHovered;
+
+  strokeBoxPath(detection.box);
+  ctx.setLineDash(isPending ? [6, 4] : []);
+  ctx.lineWidth = isSelected ? 4 : 2;
+  ctx.strokeStyle = isSelected ? "#3498db" : color;
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  const topLeft = toDisplay({ x: detection.box[0][0], y: detection.box[0][1] }, view);
+  if (showFullLabel) {
+    drawLabelText(canvasLabelFor(detection), isSelected ? "#3498db" : color, topLeft);
+  } else {
+    drawLabelText(String(index + 1), color, topLeft);
+  }
 }
 
 function boxBoundsSource(box) {
@@ -208,14 +231,18 @@ function drawDeleteHotspot() {
   }
 }
 
-function redraw() {
+// Split from redraw() so hover-only updates (canvas hover, or hovering a row
+// in the results list) can repaint the canvas without rebuilding the whole
+// list DOM underneath the cursor — which would flicker/misfire hover events
+// on the very row being hovered.
+function redrawCanvas() {
   if (!full) return;
   ctx.clearRect(0, 0, display.width, display.height);
   const visW = display.width / view.scale;
   const visH = display.height / view.scale;
   ctx.drawImage(full, view.x, view.y, visW, visH, 0, 0, display.width, display.height);
 
-  for (const d of detections) drawDetection(d);
+  detections.forEach((d, i) => drawDetection(d, i));
 
   if (draftBox) {
     const p0 = toDisplay({ x: draftBox.x0, y: draftBox.y0 }, view);
@@ -228,6 +255,10 @@ function redraw() {
   }
 
   drawDeleteHotspot();
+}
+
+function redraw() {
+  redrawCanvas();
   renderResultsList();
 }
 
@@ -296,15 +327,29 @@ function updateHoverDelete(p) {
   const newHoverId = idx >= 0 ? detections[idx].id : null;
   if (newHoverId !== hoverDeleteId) {
     hoverDeleteId = newHoverId;
-    redraw();
+    return true;
   }
+  return false;
+}
+
+function updateHoverBox(p) {
+  const sp = toSource(p, view);
+  const idx = hitTestBoxes(sp, detections);
+  const newHoverId = idx >= 0 ? detections[idx].id : null;
+  if (newHoverId !== hoverBoxId) {
+    hoverBoxId = newHoverId;
+    return true;
+  }
+  return false;
 }
 
 display.addEventListener("pointermove", (e) => {
   const p = pointerDisplayPos(e);
 
   if (!dragging) {
-    updateHoverDelete(p);
+    const changedDelete = updateHoverDelete(p);
+    const changedBox = updateHoverBox(p);
+    if (changedDelete || changedBox) redrawCanvas();
     return;
   }
 
@@ -354,9 +399,10 @@ display.addEventListener("pointerup", (e) => {
 });
 
 display.addEventListener("pointerleave", () => {
-  if (hoverDeleteId != null) {
+  if (hoverDeleteId != null || hoverBoxId != null) {
     hoverDeleteId = null;
-    redraw();
+    hoverBoxId = null;
+    redrawCanvas();
   }
 });
 
@@ -503,24 +549,70 @@ async function recognizePendingBoxes() {
 }
 recognizePendingBtn.addEventListener("click", recognizePendingBoxes);
 
+const MAX_THUMB_HEIGHT = 36; // display px
+
+// Cached on the detection itself, keyed by its box — redraw()s triggered by
+// hover alone (no box change) reuse the cached data URL instead of
+// re-cropping and re-encoding a PNG on every mouse move.
+function thumbnailDataUrl(detection) {
+  const key = JSON.stringify(detection.box);
+  if (detection._thumbKey === key && detection._thumbUrl) return detection._thumbUrl;
+
+  const b = boxBoundsSource(detection.box);
+  const w = Math.max(1, Math.round(b.maxX - b.minX));
+  const h = Math.max(1, Math.round(b.maxY - b.minY));
+  const scale = Math.min(1, MAX_THUMB_HEIGHT / h);
+  const outW = Math.max(1, Math.round(w * scale));
+  const outH = Math.max(1, Math.round(h * scale));
+
+  const c = document.createElement("canvas");
+  c.width = outW;
+  c.height = outH;
+  c.getContext("2d").drawImage(full, b.minX, b.minY, w, h, 0, 0, outW, outH);
+
+  detection._thumbKey = key;
+  detection._thumbUrl = c.toDataURL("image/png");
+  return detection._thumbUrl;
+}
+
 function renderResultsList() {
   resultsEl.innerHTML = "";
-  for (const d of detections) {
+  detections.forEach((d, i) => {
     const li = document.createElement("li");
-    const label = d.score != null
-      ? `${d.text}  (score ${d.score.toFixed(3)})`
-      : d.attempted ? "(no text found in that box)" : "(unrecognized — not yet run through OCR)";
-    li.textContent = label;
-    li.style.color = colorFor(d);
+    li.className = "result-row";
     li.style.cursor = "pointer";
     li.style.fontWeight = d.id === selectedId ? "bold" : "normal";
+
+    const thumb = document.createElement("img");
+    thumb.className = "result-thumb";
+    thumb.src = thumbnailDataUrl(d);
+    thumb.alt = "";
+
+    const label = document.createElement("span");
+    label.textContent = `#${i + 1}  ${listLabelFor(d)}`;
+    label.style.color = colorFor(d);
+
+    li.append(thumb, label);
     li.addEventListener("click", () => {
       selectedId = selectedId === d.id ? null : d.id;
       updateButtons();
       redraw();
     });
+    // Mirrors canvas hover: hovering a row reveals that box's full label on
+    // the image. Uses redrawCanvas(), not redraw() — rebuilding the list
+    // DOM while the mouse sits on one of its rows would flicker/misfire.
+    li.addEventListener("mouseenter", () => {
+      hoverBoxId = d.id;
+      redrawCanvas();
+    });
+    li.addEventListener("mouseleave", () => {
+      if (hoverBoxId === d.id) {
+        hoverBoxId = null;
+        redrawCanvas();
+      }
+    });
     resultsEl.appendChild(li);
-  }
+  });
 }
 
 function setStatusMessage(msg) {
