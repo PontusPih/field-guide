@@ -275,9 +275,15 @@ function updateButtons() {
   recognizePendingBtn.disabled = !detections.some((d) => d.score == null && !d.attempted);
 }
 
+// The canvas's rendered CSS size can differ from its internal pixel buffer
+// (display.width/height) — e.g. the flex layout shrinking it on a narrow
+// window. Scale into internal-pixel space so hit-testing and view math
+// (which assume 1 canvas px per unit) stay correct regardless of render size.
 function pointerDisplayPos(e) {
   const r = display.getBoundingClientRect();
-  return { x: e.clientX - r.left, y: e.clientY - r.top };
+  const scaleX = display.width / r.width;
+  const scaleY = display.height / r.height;
+  return { x: (e.clientX - r.left) * scaleX, y: (e.clientY - r.top) * scaleY };
 }
 
 function tryDeleteAtClick(p) {
