@@ -87,12 +87,27 @@ function rotatedCanvas(image, rotationDeg) {
   return c;
 }
 
+// The canvas box is a fixed size regardless of the loaded image's aspect
+// ratio. When the rendered image doesn't fill an axis (e.g. "fit" zoom on
+// an image whose aspect ratio differs from the canvas's), that axis gets a
+// centered letterbox offset instead of the image being pinned to the
+// canvas's top-left corner with the excess canvas space left blank.
+// toSource()/toDisplay() (geometry.js) read view.offsetX/offsetY, so this
+// must be recomputed any time view.scale changes.
+function updateViewOffsets() {
+  const renderedW = full.width * view.scale;
+  const renderedH = full.height * view.scale;
+  view.offsetX = renderedW <= display.width ? (display.width - renderedW) / 2 : 0;
+  view.offsetY = renderedH <= display.height ? (display.height - renderedH) / 2 : 0;
+}
+
 function resetView({ preserveDetections = false } = {}) {
   full = rotatedCanvas(img, rotation);
   display.width = Math.min(MAX_VIEWPORT_W, window.innerWidth - 48);
   display.height = Math.min(MAX_VIEWPORT_H, Math.round(window.innerHeight * 0.6));
   minScale = Math.min(1, display.width / full.width, display.height / full.height);
   view = { scale: minScale, x: 0, y: 0 };
+  updateViewOffsets();
   if (!preserveDetections) {
     detections = [];
     selectedId = null;
@@ -121,8 +136,9 @@ function zoomTo(newScale, anchorDisplayPt) {
   if (newScale === view.scale) return;
   const anchorSource = toSource(anchorDisplayPt, view);
   view.scale = newScale;
-  view.x = anchorSource.x - anchorDisplayPt.x / view.scale;
-  view.y = anchorSource.y - anchorDisplayPt.y / view.scale;
+  updateViewOffsets(); // offsets depend on scale — recompute before inverting below
+  view.x = anchorSource.x - (anchorDisplayPt.x - view.offsetX) / view.scale;
+  view.y = anchorSource.y - (anchorDisplayPt.y - view.offsetY) / view.scale;
   clampView();
   updateMeta();
   redraw();
@@ -307,9 +323,15 @@ function drawDeleteHotspot() {
 function redrawCanvas() {
   if (!full) return;
   ctx.clearRect(0, 0, display.width, display.height);
-  const visW = display.width / view.scale;
-  const visH = display.height / view.scale;
-  ctx.drawImage(full, view.x, view.y, visW, visH, 0, 0, display.width, display.height);
+  // Clip the sampled source rect to the image's actual bounds — sampling
+  // past them (e.g. at "fit" zoom on an image whose aspect ratio doesn't
+  // match the canvas's) previously left drawImage silently drawing only
+  // the overlap pinned to the canvas's top-left corner. The now-smaller
+  // destination rect is drawn at view.offsetX/offsetY instead, centering
+  // the image in the leftover space on whichever axis doesn't fill it.
+  const visW = Math.min(full.width, display.width / view.scale);
+  const visH = Math.min(full.height, display.height / view.scale);
+  ctx.drawImage(full, view.x, view.y, visW, visH, view.offsetX, view.offsetY, visW * view.scale, visH * view.scale);
 
   detections.forEach((d, i) => drawDetection(d, i));
 
@@ -818,8 +840,9 @@ function zoomToBox(detection) {
 
   const scaleToFit = Math.min(display.width / targetW, display.height / targetH);
   view.scale = Math.min(MAX_SCALE, Math.max(minScale, scaleToFit));
-  view.x = centerX - display.width / view.scale / 2;
-  view.y = centerY - display.height / view.scale / 2;
+  updateViewOffsets(); // offsets depend on scale — recompute before using below
+  view.x = centerX - (display.width / 2 - view.offsetX) / view.scale;
+  view.y = centerY - (display.height / 2 - view.offsetY) / view.scale;
   clampView();
   updateMeta();
 }

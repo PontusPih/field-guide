@@ -34,6 +34,33 @@ test("toDisplay is the exact inverse of toSource", () => {
   assert.ok(Math.abs(roundTripped.y - sourcePoint.y) < 1e-9);
 });
 
+test("toDisplay applies the letterbox offset (image narrower than canvas)", () => {
+  const view = { scale: 1, x: 0, y: 0, offsetX: 50, offsetY: 0 };
+  // source (0,0), which sits at the image's edge, should render 50px in
+  // from the canvas's left edge — not flush against it.
+  assert.deepEqual(toDisplay({ x: 0, y: 0 }, view), { x: 50, y: 0 });
+});
+
+test("toSource subtracts the letterbox offset before unscaling", () => {
+  const view = { scale: 2, x: 0, y: 0, offsetX: 50, offsetY: 20 };
+  // a click exactly on the offset origin should land on source (0,0), not
+  // somewhere shifted by the letterbox bar's width.
+  assert.deepEqual(toSource({ x: 50, y: 20 }, view), { x: 0, y: 0 });
+});
+
+test("toSource/toDisplay round-trip correctly with a letterbox offset", () => {
+  const view = { scale: 1.7, x: 30, y: 5, offsetX: 40, offsetY: 15 };
+  const sourcePoint = { x: 120, y: 90 };
+  const roundTripped = toSource(toDisplay(sourcePoint, view), view);
+  assert.ok(Math.abs(roundTripped.x - sourcePoint.x) < 1e-9);
+  assert.ok(Math.abs(roundTripped.y - sourcePoint.y) < 1e-9);
+});
+
+test("offsetX/offsetY default to 0 when absent (no letterbox)", () => {
+  const view = { scale: 2, x: 10, y: 10 };
+  assert.deepEqual(toDisplay({ x: 10, y: 10 }, view), { x: 0, y: 0 });
+});
+
 test("pointInPolygon: inside and outside an axis-aligned rectangle", () => {
   const rect = [[0, 0], [10, 0], [10, 10], [0, 10]];
   assert.equal(pointInPolygon({ x: 5, y: 5 }, rect), true);

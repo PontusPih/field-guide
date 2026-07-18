@@ -3,19 +3,26 @@
 // Pure view-transform and hit-testing math for the pan/zoom/box-edit canvas.
 // Kept dependency-free from the DOM so it's testable with `node --test`.
 
-// view: { scale, x, y } — scale = display px per source px;
-// x/y = source-space px shown at display (0,0).
+// view: { scale, x, y, offsetX?, offsetY? } — scale = display px per source
+// px; x/y = source-space px shown at display (offsetX, offsetY). offsetX/Y
+// default to 0 (the canvas-filling case) when absent — the letterbox offset
+// applied when the rendered image doesn't fill the canvas on that axis
+// (e.g. "fit" zoom on an image whose aspect ratio differs from the canvas's).
 function toSource(displayPoint, view) {
+  const offsetX = view.offsetX || 0;
+  const offsetY = view.offsetY || 0;
   return {
-    x: view.x + displayPoint.x / view.scale,
-    y: view.y + displayPoint.y / view.scale,
+    x: view.x + (displayPoint.x - offsetX) / view.scale,
+    y: view.y + (displayPoint.y - offsetY) / view.scale,
   };
 }
 
 function toDisplay(sourcePoint, view) {
+  const offsetX = view.offsetX || 0;
+  const offsetY = view.offsetY || 0;
   return {
-    x: (sourcePoint.x - view.x) * view.scale,
-    y: (sourcePoint.y - view.y) * view.scale,
+    x: (sourcePoint.x - view.x) * view.scale + offsetX,
+    y: (sourcePoint.y - view.y) * view.scale + offsetY,
   };
 }
 
