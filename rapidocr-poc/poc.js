@@ -696,6 +696,27 @@ function thumbnailDataUrl(detection) {
   return detection._thumbUrl;
 }
 
+// Frames the box with 3x its own width/height as margin on each side (so
+// the visible region is 7x the box's size along each axis) — enough context
+// to see where the box sits without zooming in so tight it's disorienting.
+function zoomToBox(detection) {
+  if (!full) return;
+  const b = boxBoundsSource(detection.box);
+  const boxW = b.maxX - b.minX;
+  const boxH = b.maxY - b.minY;
+  const targetW = boxW * 7;
+  const targetH = boxH * 7;
+  const centerX = (b.minX + b.maxX) / 2;
+  const centerY = (b.minY + b.maxY) / 2;
+
+  const scaleToFit = Math.min(display.width / targetW, display.height / targetH);
+  view.scale = Math.min(MAX_SCALE, Math.max(minScale, scaleToFit));
+  view.x = centerX - display.width / view.scale / 2;
+  view.y = centerY - display.height / view.scale / 2;
+  clampView();
+  updateMeta();
+}
+
 function renderResultsList() {
   resultsEl.innerHTML = "";
   detections.forEach((d, i) => {
@@ -713,7 +734,39 @@ function renderResultsList() {
     label.textContent = `#${i + 1}  ${listLabelFor(d)}`;
     label.style.color = colorFor(d);
 
-    li.append(thumb, label);
+    const icons = document.createElement("span");
+    icons.className = "result-icons";
+
+    const findBtn = document.createElement("button");
+    findBtn.type = "button";
+    findBtn.className = "icon-btn";
+    findBtn.title = "Pan/zoom to this box";
+    findBtn.textContent = "\u{1F50D}"; // 🔍
+    findBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      selectedId = d.id;
+      zoomToBox(d);
+      updateButtons();
+      redraw();
+    });
+
+    const delBtn = document.createElement("button");
+    delBtn.type = "button";
+    delBtn.className = "icon-btn";
+    delBtn.title = "Delete this box";
+    delBtn.textContent = "✕"; // ✕
+    delBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      detections = detections.filter((x) => x.id !== d.id);
+      if (selectedId === d.id) selectedId = null;
+      if (hoverDeleteId === d.id) hoverDeleteId = null;
+      if (hoverBoxId === d.id) hoverBoxId = null;
+      updateButtons();
+      redraw();
+    });
+
+    icons.append(findBtn, delBtn);
+    li.append(thumb, label, icons);
     li.addEventListener("click", () => {
       selectedId = selectedId === d.id ? null : d.id;
       updateButtons();
