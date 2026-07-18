@@ -336,6 +336,7 @@ display.addEventListener("pointerup", (e) => {
         box: normalizedRectBox(draftBox),
         text: null,
         score: null,
+        source: "manual",
       });
       selectedId = detections[detections.length - 1].id;
     } else {
@@ -424,10 +425,16 @@ runOcrBtn.addEventListener("click", async () => {
     const resp = await fetch("/ocr", { method: "POST", body: blob });
     if (!resp.ok) throw new Error(`server returned ${resp.status}`);
     const found = await resp.json();
-    detections = found.map((d) => ({ id: nextId++, box: d.box, text: d.text, score: d.score }));
+    // Only the auto-detected layer gets refreshed — boxes you drew or
+    // recognized by hand (source "manual") survive a re-scan.
+    const autoDetections = found.map((d) => (
+      { id: nextId++, box: d.box, text: d.text, score: d.score, source: "auto" }
+    ));
+    const manualDetections = detections.filter((d) => d.source === "manual");
+    detections = [...manualDetections, ...autoDetections];
     selectedId = null;
     redraw();
-    setStatusMessage(`Found ${detections.length} box(es)`);
+    setStatusMessage(`Found ${autoDetections.length} box(es) (${manualDetections.length} manual box(es) kept)`);
   } catch (err) {
     setStatusMessage(`OCR failed: ${err.message}`);
   } finally {
