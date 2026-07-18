@@ -48,6 +48,23 @@ function distance(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+// Axis-aligned bounding box of a (possibly tilted) box's corner points.
+function boundsOf(box) {
+  const xs = box.map((p) => p[0]);
+  const ys = box.map((p) => p[1]);
+  return {
+    minX: Math.min(...xs), minY: Math.min(...ys),
+    maxX: Math.max(...xs), maxY: Math.max(...ys),
+  };
+}
+
+// Overlap area between two axis-aligned bounds; 0 if they don't intersect.
+function overlapArea(a, b) {
+  const w = Math.max(0, Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX));
+  const h = Math.max(0, Math.min(a.maxY, b.maxY) - Math.max(a.minY, b.minY));
+  return w * h;
+}
+
 // Index of the candidate closest to `point` within `radius`, or -1 if none
 // qualify. Used to decide which box's delete-X (if any) should light up.
 function nearestWithinRadius(point, candidates, radius) {
@@ -63,4 +80,7 @@ function nearestWithinRadius(point, candidates, radius) {
   return bestIndex;
 }
 
-export { toSource, toDisplay, pointInPolygon, hitTestBoxes, distance, nearestWithinRadius };
+export {
+  toSource, toDisplay, pointInPolygon, hitTestBoxes, distance, nearestWithinRadius,
+  boundsOf, overlapArea,
+};

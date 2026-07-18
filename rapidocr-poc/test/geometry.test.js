@@ -7,6 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   toSource, toDisplay, pointInPolygon, hitTestBoxes, distance, nearestWithinRadius,
+  boundsOf, overlapArea,
 } from "../geometry.js";
 
 test("toSource/toDisplay round-trip at scale 1, no offset", () => {
@@ -75,4 +76,33 @@ test("nearestWithinRadius picks the closest candidate inside the radius", () => 
 test("nearestWithinRadius returns -1 when everything is out of range", () => {
   const candidates = [{ x: 100, y: 100 }];
   assert.equal(nearestWithinRadius({ x: 0, y: 0 }, candidates, 5), -1);
+});
+
+test("boundsOf computes the axis-aligned bounding box of a tilted quad", () => {
+  const quad = [[10, 2], [50, 0], [52, 20], [12, 22]];
+  assert.deepEqual(boundsOf(quad), { minX: 10, minY: 0, maxX: 52, maxY: 22 });
+});
+
+test("overlapArea is 0 for disjoint rects", () => {
+  const a = { minX: 0, minY: 0, maxX: 10, maxY: 10 };
+  const b = { minX: 20, minY: 20, maxX: 30, maxY: 30 };
+  assert.equal(overlapArea(a, b), 0);
+});
+
+test("overlapArea is 0 for rects that only touch at an edge", () => {
+  const a = { minX: 0, minY: 0, maxX: 10, maxY: 10 };
+  const b = { minX: 10, minY: 0, maxX: 20, maxY: 10 };
+  assert.equal(overlapArea(a, b), 0);
+});
+
+test("overlapArea computes the intersection area of overlapping rects", () => {
+  const a = { minX: 0, minY: 0, maxX: 10, maxY: 10 };
+  const b = { minX: 5, minY: 5, maxX: 15, maxY: 15 };
+  assert.equal(overlapArea(a, b), 25); // 5x5 overlap square
+});
+
+test("overlapArea handles one rect fully containing another", () => {
+  const outer = { minX: 0, minY: 0, maxX: 100, maxY: 100 };
+  const inner = { minX: 10, minY: 10, maxX: 20, maxY: 20 };
+  assert.equal(overlapArea(outer, inner), 100); // inner's full 10x10 area
 });

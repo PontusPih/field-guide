@@ -22,6 +22,7 @@
 
 import {
   toSource, toDisplay, hitTestBoxes, distance, nearestWithinRadius, pointInPolygon,
+  boundsOf, overlapArea,
 } from "./geometry.js";
 
 const fileInput = document.getElementById("file");
@@ -31,6 +32,8 @@ const rotateLeftBtn = document.getElementById("rotateLeft");
 const rotateRightBtn = document.getElementById("rotateRight");
 const runOcrBtn = document.getElementById("runOcr");
 const recognizePendingBtn = document.getElementById("recognizePending");
+const pruneOverlappingBtn = document.getElementById("pruneOverlapping");
+const pruneEmptyBtn = document.getElementById("pruneEmpty");
 const deleteBtn = document.getElementById("deleteSelected");
 const statusEl = document.getElementById("status");
 const resultsEl = document.getElementById("results");
@@ -38,6 +41,7 @@ const resultsEl = document.getElementById("results");
 const MAX_VIEWPORT_W = 900;
 const MAX_VIEWPORT_H = 650;
 const MAX_SCALE = 8;
+const ZOOM_SENSITIVITY = 0.008; // tuned so a typical pinch tick feels gradual, not stepped
 const CLICK_THRESHOLD_PX = 4; // display px; below this, pointerup is a "click" not a drag
 const DELETE_HOTSPOT_RADIUS = 8; // display px, drawn size of the delete-X
 const DELETE_HOVER_RADIUS = 16; // display px, how close the cursor must get to reveal it
@@ -195,20 +199,11 @@ function drawDetection(detection, index) {
   }
 }
 
-function boxBoundsSource(box) {
-  const xs = box.map((p) => p[0]);
-  const ys = box.map((p) => p[1]);
-  return {
-    minX: Math.min(...xs), minY: Math.min(...ys),
-    maxX: Math.max(...xs), maxY: Math.max(...ys),
-  };
-}
-
 // Delete-X floats just above the box's top-center, in display space (view-
 // dependent, so it tracks pan/zoom correctly) — kept clear of the corners,
 // which are now resize handles.
 function deleteHotspotDisplayPos(detection) {
-  const b = boxBoundsSource(detection.box);
+  const b = boundsOf(detection.box);
   const topCenter = toDisplay({ x: (b.minX + b.maxX) / 2, y: b.minY }, view);
   return { x: topCenter.x, y: topCenter.y - 14 };
 }
@@ -241,7 +236,7 @@ function selectedDetection() {
 function drawResizeHandles() {
   const detection = selectedDetection();
   if (!detection) return;
-  const bounds = boxBoundsSource(detection.box);
+  const bounds = boundsOf(detection.box);
   for (const corner of cornersOf(bounds)) {
     const p = toDisplay(corner, view);
     ctx.fillStyle = "#fff";
@@ -343,11 +338,69 @@ function normalizedRectBox(b) {
   return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
 }
 
+// Pairs of detections whose bounding rects intersect — most likely
+// duplicate detections of the same physical label from overlapping drawn
+// regions. Keyed by detection id -> the other overlapping boxes' display
+// numbers (1-based), for the list warning.
+function computeOverlapWarnings() {
+  const warnings = new Map();
+  for (let i = 0; i < detections.length; i++) {
+    const boundsI = boundsOf(detections[i].box);
+    for (let j = i + 1; j < detections.length; j++) {
+      if (overlapArea(boundsI, boundsOf(detections[j].box)) <= 0) continue;
+      if (!warnings.has(detections[i].id)) warnings.set(detections[i].id, []);
+      if (!warnings.has(detections[j].id)) warnings.set(detections[j].id, []);
+      warnings.get(detections[i].id).push(j + 1);
+      warnings.get(detections[j].id).push(i + 1);
+    }
+  }
+  return warnings;
+}
+
+// Greedy non-max suppression: process boxes highest-score first, drop any
+// box that overlaps one already kept. Keeps the more-trustworthy box from
+// each overlapping cluster; pending (null-score) boxes rank lowest.
+// Shared cleanup for any bulk removal: drop the ids from `detections` and
+// clear any selection/hover state that would otherwise dangle on a removed id.
+function removeDetections(idsToRemove) {
+  if (idsToRemove.size === 0) return 0;
+  detections = detections.filter((d) => !idsToRemove.has(d.id));
+  if (selectedId != null && idsToRemove.has(selectedId)) selectedId = null;
+  if (hoverDeleteId != null && idsToRemove.has(hoverDeleteId)) hoverDeleteId = null;
+  if (hoverBoxId != null && idsToRemove.has(hoverBoxId)) hoverBoxId = null;
+  return idsToRemove.size;
+}
+
+function pruneOverlapping() {
+  const sorted = [...detections].sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
+  const kept = [];
+  const removedIds = new Set();
+  for (const d of sorted) {
+    const dBounds = boundsOf(d.box);
+    const overlapsKept = kept.some((k) => overlapArea(dBounds, boundsOf(k.box)) > 0);
+    if (overlapsKept) removedIds.add(d.id);
+    else kept.push(d);
+  }
+  return removeDetections(removedIds);
+}
+
+// "Empty" = recognition was tried and found nothing (dark-red dashed).
+// Never-tried boxes ("?", gray dashed) are left alone — they're still
+// pending user intent, not a dead end.
+function pruneEmpty() {
+  const emptyIds = new Set(
+    detections.filter((d) => d.score == null && d.attempted).map((d) => d.id),
+  );
+  return removeDetections(emptyIds);
+}
+
 function updateButtons() {
   const hasImage = !!img;
   for (const b of [rotateLeftBtn, rotateRightBtn, runOcrBtn]) b.disabled = !hasImage;
   deleteBtn.disabled = selectedId == null;
   recognizePendingBtn.disabled = !detections.some((d) => d.score == null && !d.attempted);
+  pruneOverlappingBtn.disabled = computeOverlapWarnings().size === 0;
+  pruneEmptyBtn.disabled = !detections.some((d) => d.score == null && d.attempted);
 }
 
 // The canvas's rendered CSS size can differ from its internal pixel buffer
@@ -396,7 +449,7 @@ display.addEventListener("pointerdown", (e) => {
   if (selectedId != null) {
     const current = selectedDetection();
     if (current) {
-      const bounds = boxBoundsSource(current.box);
+      const bounds = boundsOf(current.box);
       const handlePositions = cornersOf(bounds).map((c) => toDisplay(c, view));
       const handleIdx = nearestWithinRadius(p, handlePositions, RESIZE_HANDLE_HIT_RADIUS);
       if (handleIdx >= 0) {
@@ -538,7 +591,12 @@ display.addEventListener("wheel", (e) => {
   e.preventDefault();
   const anchor = pointerDisplayPos(e);
   if (e.ctrlKey) {
-    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    // Scale the per-event factor by the actual gesture magnitude (deltaY)
+    // instead of a fixed step — a fixed step means a trackpad's early
+    // sparse/small pinch events zoom just as much as a later fast burst,
+    // which reads as "nothing, nothing, then a lot." Clamped so a rare
+    // large deltaY spike can't jump more than ~1.4x in a single event.
+    const factor = Math.max(0.7, Math.min(1.4, Math.exp(-e.deltaY * ZOOM_SENSITIVITY)));
     zoomTo(view.scale * factor, anchor);
   } else {
     view.x += e.deltaX / view.scale;
@@ -564,6 +622,20 @@ function deleteSelected() {
   redraw();
 }
 deleteBtn.addEventListener("click", deleteSelected);
+
+pruneOverlappingBtn.addEventListener("click", () => {
+  const removed = pruneOverlapping();
+  setStatusMessage(removed > 0 ? `Removed ${removed} overlapping box(es)` : "No overlapping boxes found");
+  updateButtons();
+  redraw();
+});
+
+pruneEmptyBtn.addEventListener("click", () => {
+  const removed = pruneEmpty();
+  setStatusMessage(removed > 0 ? `Removed ${removed} empty box(es)` : "No empty boxes found");
+  updateButtons();
+  redraw();
+});
 
 // A 90-degree rotation of the canvas is a well-defined coordinate transform,
 // so existing boxes can be carried through it rather than discarded.
@@ -631,7 +703,7 @@ function marginFor(bounds) {
 // full detect+recognize pipeline, and keep every result found — not just
 // the best-scoring one — translated back into full-image coordinates.
 async function recognizeRegion(placeholder) {
-  const bounds = boxBoundsSource(placeholder.box);
+  const bounds = boundsOf(placeholder.box);
   const margin = marginFor(bounds);
   const x0 = Math.max(0, Math.floor(bounds.minX - margin));
   const y0 = Math.max(0, Math.floor(bounds.minY - margin));
@@ -693,11 +765,11 @@ async function recognizePendingBoxes() {
     if (emptyCount > 0) parts.push(`${emptyCount} region(s) found no text`);
     if (noBoostCount > 0) {
       parts.push(
-        `${noBoostCount} region(s) had a short side ≥${RAPIDOCR_UPSCALE_SHORT_SIDE}px `
-        + "(no small-crop resolution boost, same as scanning the full image)",
+        `${noBoostCount} region(s) shortest side ≥${RAPIDOCR_UPSCALE_SHORT_SIDE}px `
+        + "(no scale boost, same as full image scan)",
       );
     }
-    setStatusMessage(parts.join("; "));
+    setStatusMessage(parts.join("\n"));
   } finally {
     updateButtons();
     redraw();
@@ -714,7 +786,7 @@ function thumbnailDataUrl(detection) {
   const key = JSON.stringify(detection.box);
   if (detection._thumbKey === key && detection._thumbUrl) return detection._thumbUrl;
 
-  const b = boxBoundsSource(detection.box);
+  const b = boundsOf(detection.box);
   const w = Math.max(1, Math.round(b.maxX - b.minX));
   const h = Math.max(1, Math.round(b.maxY - b.minY));
   const scale = Math.min(1, MAX_THUMB_HEIGHT / h);
@@ -736,7 +808,7 @@ function thumbnailDataUrl(detection) {
 // to see where the box sits without zooming in so tight it's disorienting.
 function zoomToBox(detection) {
   if (!full) return;
-  const b = boxBoundsSource(detection.box);
+  const b = boundsOf(detection.box);
   const boxW = b.maxX - b.minX;
   const boxH = b.maxY - b.minY;
   const targetW = boxW * 7;
@@ -754,6 +826,7 @@ function zoomToBox(detection) {
 
 function renderResultsList() {
   resultsEl.innerHTML = "";
+  const overlapWarnings = computeOverlapWarnings();
   detections.forEach((d, i) => {
     const li = document.createElement("li");
     li.className = "result-row";
@@ -765,9 +838,23 @@ function renderResultsList() {
     thumb.src = thumbnailDataUrl(d);
     thumb.alt = "";
 
+    const info = document.createElement("div");
+    info.className = "result-info";
+
     const label = document.createElement("span");
+    label.className = "result-label";
     label.textContent = `#${i + 1}  ${listLabelFor(d)}`;
     label.style.color = colorFor(d);
+    info.append(label);
+
+    const overlapsWith = overlapWarnings.get(d.id);
+    if (overlapsWith) {
+      const warn = document.createElement("span");
+      warn.className = "overlap-warning";
+      warn.textContent = `⚠ overlaps #${overlapsWith.join(", #")}`;
+      warn.title = "This box's region overlaps another — likely a duplicate of the same label";
+      info.append(warn);
+    }
 
     const icons = document.createElement("span");
     icons.className = "result-icons";
@@ -801,7 +888,7 @@ function renderResultsList() {
     });
 
     icons.append(findBtn, delBtn);
-    li.append(thumb, label, icons);
+    li.append(thumb, info, icons);
     li.addEventListener("click", () => {
       selectedId = selectedId === d.id ? null : d.id;
       updateButtons();
@@ -828,7 +915,7 @@ function setStatusMessage(msg) {
   const meta = full
     ? `${full.width}×${full.height}px · rotation ${rotation}° · zoom ${Math.round(view.scale * 100)}%`
     : "";
-  statusEl.textContent = meta ? `${meta} — ${msg}` : msg;
+  statusEl.textContent = meta ? `${meta}\n${msg}` : msg;
 }
 
 fileInput.addEventListener("change", () => {

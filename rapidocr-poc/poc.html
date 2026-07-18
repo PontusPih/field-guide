@@ -6,7 +6,7 @@
 <style>
   body { font-family: sans-serif; margin: 1.5rem; max-width: 80rem; }
   #controls { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
-  #status { color: #555; margin-top: 0.5rem; min-height: 1.2em; }
+  #status { color: #555; margin-top: 0.5rem; min-height: 1.2em; white-space: pre-line; }
   #cheatsheet {
     border: 1px solid #ccc; border-radius: 6px; padding: 0.75rem 1rem;
     background: #f7f7f7; font-size: 0.9rem; margin-top: 1rem;
@@ -27,6 +27,9 @@
   #results { list-style: none; margin: 0; padding: 0; font-family: monospace; font-size: 0.85rem; }
   .result-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0; border-bottom: 1px solid #eee; }
   .result-thumb { max-height: 36px; max-width: 90px; border: 1px solid #ccc; background: #fff; flex-shrink: 0; }
+  .result-info { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+  .result-label { overflow-wrap: break-word; }
+  .overlap-warning { font-size: 0.75rem; color: #e67e22; }
   .result-icons { margin-left: auto; display: flex; gap: 0.35rem; flex-shrink: 0; }
   .icon-btn {
     border: 1px solid #ccc; background: #fff; border-radius: 4px; cursor: pointer;
@@ -48,6 +51,8 @@
     <button id="rotateRight" disabled>&#8635; Rotate right</button>
     <button id="runOcr" disabled>Run OCR</button>
     <button id="recognizePending" disabled>Recognize new boxes</button>
+    <button id="pruneOverlapping" disabled>Prune overlapping</button>
+    <button id="pruneEmpty" disabled>Prune empty</button>
     <button id="deleteSelected" disabled>Delete selected</button>
   </div>
   <details id="cheatsheet">
@@ -62,8 +67,9 @@
       <tr><td>Two-finger scroll</td><td>Pan</td></tr>
       <tr><td>Pinch</td><td>Zoom (anchored at cursor)</td></tr>
       <tr><td>Delete / Backspace</td><td>Remove selected box</td></tr>
-      <tr><td>Hover near a box's top-right corner, click the &times;</td><td>Delete that box immediately</td></tr>
+      <tr><td>Hover near a box (or select it), click the &times; floating above it</td><td>Delete that box immediately</td></tr>
       <tr><td>Click a result in the list</td><td>Select/deselect its box</td></tr>
+      <tr><td>&#128269; / &times; next to a list row</td><td>Pan/zoom to that box / delete it directly</td></tr>
     </table>
   </details>
   <div id="status"></div>
