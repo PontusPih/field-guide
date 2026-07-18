@@ -6,24 +6,47 @@
 <style>
   body { font-family: sans-serif; margin: 1.5rem; max-width: 60rem; }
   #controls { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
-  #stage { max-width: 100%; height: auto; border: 1px solid #999; display: block; margin-top: 1rem; }
+  #stage { max-width: 100%; height: auto; border: 1px solid #999; display: block; margin-top: 1rem; touch-action: none; }
   #results { font-family: monospace; }
   #status { color: #555; margin-top: 0.5rem; min-height: 1.2em; }
+  #cheatsheet {
+    border: 1px solid #ccc; border-radius: 6px; padding: 0.75rem 1rem;
+    background: #f7f7f7; font-size: 0.9rem; margin-top: 1rem;
+  }
+  #cheatsheet summary { cursor: pointer; font-weight: bold; }
+  #cheatsheet table { margin-top: 0.5rem; border-collapse: collapse; }
+  #cheatsheet td { padding: 0.15rem 0.6rem 0.15rem 0; vertical-align: top; }
+  #cheatsheet td:first-child { font-family: monospace; white-space: nowrap; color: #234; }
 </style>
 </head>
 <body>
   <h1>RapidOCR POC</h1>
-  <p>Load a handle photo, rotate if needed, then run OCR. Boxes are colored by
-  confidence: green &ge;0.9, yellow &ge;0.5, red below.</p>
+  <p>Load a handle photo, rotate if needed, pan/zoom, then run OCR. Boxes are
+  colored by confidence: green &ge;0.9, yellow &ge;0.5, red below; gray dashed
+  = drawn but not yet recognized.</p>
   <div id="controls">
     <input type="file" id="file" accept="image/*">
     <button id="rotateLeft" disabled>&#8634; Rotate left</button>
     <button id="rotateRight" disabled>&#8635; Rotate right</button>
     <button id="runOcr" disabled>Run OCR</button>
+    <button id="deleteSelected" disabled>Delete selected</button>
   </div>
+  <details id="cheatsheet" open>
+    <summary>Mouse / gesture / key shortcuts</summary>
+    <table>
+      <tr><td>Left-drag on empty canvas</td><td>Draw a new box</td></tr>
+      <tr><td>Click a box</td><td>Select it (click again to deselect)</td></tr>
+      <tr><td>Ctrl + left-drag</td><td>Pan</td></tr>
+      <tr><td>Two-finger scroll</td><td>Pan</td></tr>
+      <tr><td>Pinch</td><td>Zoom (anchored at cursor)</td></tr>
+      <tr><td>Delete / Backspace</td><td>Remove selected box</td></tr>
+      <tr><td>Hover near a box's top-right corner, click the &times;</td><td>Delete that box immediately</td></tr>
+      <tr><td>Click a result in the list</td><td>Select/deselect its box</td></tr>
+    </table>
+  </details>
   <div id="status"></div>
   <canvas id="stage"></canvas>
   <ul id="results"></ul>
-  <script src="poc.js"></script>
+  <script type="module" src="poc.js"></script>
 </body>
 </html>
