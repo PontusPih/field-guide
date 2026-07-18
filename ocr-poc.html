@@ -27,10 +27,18 @@
                  text-align: center; font-size: 0.85rem; }
     .crop-card img { display: block; max-width: 12rem; max-height: 8rem;
                       margin-bottom: 0.35rem; }
+    .crop-card img.pre-img { border: 1px dashed #999; margin: 0.35rem 0; }
+    .ocr-line { font-weight: 600; margin: 0.35rem 0; font-family: ui-monospace, monospace; }
+    .ocr-line.error { font-weight: 400; color: #b00020; font-family: inherit; }
+    .match-line { font-size: 0.85rem; margin: 0 0 0.35rem; }
+    .match-line.exact { color: #1b7f37; font-weight: 600; }
+    .match-line.close { color: #b06a00; }
+    .match-line.far { color: #888; }
     @media (prefers-color-scheme: dark) {
       .lede, #meta { color: #aaa; }
       #canvas-wrap { border-color: #555; }
       .crop-card { border-color: #444; }
+      .crop-card img.pre-img { border-color: #666; }
       .sep { background: #444; }
     }
   </style>
@@ -39,7 +47,9 @@
   <h1>OCR crop — POC</h1>
   <p class="lede">Upload a board photo, rotate in 90&deg; steps if needed, zoom and pan
     to get the number large enough to see clearly, then switch to Draw box and drag a
-    box around it. One box at a time for now.</p>
+    box around it. One box at a time for now. Confirming a crop runs OCR on it
+    automatically (Tesseract.js, loaded from a CDN — first run downloads the English
+    model, a few MB).</p>
 
   <div class="controls">
     <input type="file" id="file" accept="image/*">
@@ -65,6 +75,7 @@
   <h2>Crops</h2>
   <div class="crops" id="crops"></div>
 
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script type="module" src="ocr-poc.js"></script>
 </body>
 </html>

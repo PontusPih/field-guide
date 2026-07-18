@@ -73,8 +73,23 @@ A user with a stack of unknown boards enters/scans their module numbers. The app
       sets + 2 partial") in the center column and the export.
 
 ### Phase 2 — image recognition
-- [ ] Capture / upload a board photo
+- [x] Capture / upload a board photo — `ocr-poc.html`/`ocr-poc.js`: file upload, 90°-step
+      rotate, zoom/pan, manual crop-box draw (box stored in source-image coordinates so
+      it survives pan/zoom).
 - [ ] OCR the handle text (module number, optional revision)
+      Tried: Tesseract.js in-browser, tuned hard — PSM.SINGLE_LINE, character whitelist
+      narrowed to the alphabet actually used across all 1464 modules in
+      `field-guide-02.txt` (no I/Z), grayscale + contrast-stretch + automatic polarity
+      detection, upscale to ~120px tall, plus post-hoc Levenshtein fuzzy-match against the
+      real module list. Measurably better than raw Tesseract, but still unreliable on
+      slightly tilted or lower-quality photos: Tesseract is a document-OCR engine (expects
+      near-horizontal, well-resolved scanned text), not a scene-text engine, and no amount
+      of preprocessing fixes that mismatch.
+      Next: evaluate PaddleOCR (a real scene-text detector, trained on photos rather than
+      scans) as a local/terminal tool rather than in-browser — the client-side-only
+      constraint applies to the shipped web app, not necessarily to this evaluation.
+      Sample real handle photos for testing live in this folder: `IMG_1524.jpg`,
+      `IMG_1527.jpg`, `IMG_1529.jpg`.
 - [ ] Feed recognized numbers into the Phase-1 lookup
 
 ### Phase 3 — presentation depth
