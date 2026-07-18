@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Field guide — OCR crop POC</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, sans-serif; max-width: 60rem; margin: 2rem auto;
+           padding: 0 1rem; line-height: 1.5; }
+    h1 { margin-bottom: 0.2rem; }
+    .lede { margin-top: 0; color: #666; }
+    .controls { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;
+                margin: 1rem 0; }
+    button { font-size: 0.95rem; padding: 0.4rem 0.9rem; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    #canvas-wrap { border: 1px dashed #999; border-radius: 8px; padding: 0.5rem;
+                   display: inline-block; max-width: 100%; }
+    #display { touch-action: none; max-width: 100%; display: block; cursor: crosshair; }
+    #meta { color: #666; font-size: 0.85rem; margin: 0.5rem 0; }
+    .crops { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: 1rem; }
+    .crop-card { border: 1px solid #ccc; border-radius: 8px; padding: 0.5rem;
+                 text-align: center; font-size: 0.85rem; }
+    .crop-card img { display: block; max-width: 12rem; max-height: 8rem;
+                      margin-bottom: 0.35rem; }
+    @media (prefers-color-scheme: dark) {
+      .lede, #meta { color: #aaa; }
+      #canvas-wrap { border-color: #555; }
+      .crop-card { border-color: #444; }
+    }
+  </style>
+</head>
+<body>
+  <h1>OCR crop — POC</h1>
+  <p class="lede">Upload a board photo, rotate in 90&deg; steps if needed, drag a box
+    around the module number, and confirm the crop. One box at a time for now.</p>
+
+  <div class="controls">
+    <input type="file" id="file" accept="image/*">
+    <button id="rotate-left" disabled>&#8634; Rotate left</button>
+    <button id="rotate-right" disabled>&#8635; Rotate right</button>
+    <button id="confirm" disabled>Confirm crop</button>
+    <button id="clear-box" disabled>Clear box</button>
+  </div>
+  <p id="meta"></p>
+
+  <div id="canvas-wrap">
+    <canvas id="display" width="1" height="1"></canvas>
+  </div>
+
+  <h2>Crops</h2>
+  <div class="crops" id="crops"></div>
+
+  <script type="module" src="ocr-poc.js"></script>
+</body>
+</html>
