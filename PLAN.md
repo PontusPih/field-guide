@@ -85,12 +85,78 @@ A user with a stack of unknown boards enters/scans their module numbers. The app
       slightly tilted or lower-quality photos: Tesseract is a document-OCR engine (expects
       near-horizontal, well-resolved scanned text), not a scene-text engine, and no amount
       of preprocessing fixes that mismatch.
-      Next: evaluate PaddleOCR (a real scene-text detector, trained on photos rather than
-      scans) as a local/terminal tool rather than in-browser — the client-side-only
-      constraint applies to the shipped web app, not necessarily to this evaluation.
-      Sample real handle photos for testing live in this folder: `IMG_1524.jpg`,
-      `IMG_1527.jpg`, `IMG_1529.jpg`.
-- [ ] Feed recognized numbers into the Phase-1 lookup
+      Evaluated PaddleOCR next, via `rapidocr-onnxruntime` (the ONNX-runtime build of the
+      same PP-OCR models — lighter than the full PaddlePaddle framework). Confirmed
+      measurably better on the same real sample photos: reads printed labels its own
+      detector finds automatically, correctly ignores embossed metal text, and — cropped
+      to a region under its ~736px auto-upscale threshold (`Det.limit_side_len`) —
+      recovers labels too small to read in a full-frame scan. Prototyped as an interactive
+      local tool in `rapidocr-poc/` (Python stdlib `http.server` backend + browser
+      frontend): load/rotate/pan/zoom, automatic detection, manual box editing
+      (draw/select/delete/move/resize/recognize) including multi-result regions and
+      overlap/empty cleanup. Node-tested geometry, Python-tested backend.
+      Next: turn the prototype into the shipped feature — see Phase 2b below.
+- [ ] Feed recognized numbers into the Phase-1 lookup — superseded by Phase 2b's
+      integration + export step.
+
+### Phase 2b — RapidOCR service: prototype to production
+`rapidocr-poc/` proved the approach; shipping it needs a real backend service (RapidOCR
+only runs in Python, so this can't stay client-side like the rest of the app) plus
+productionizing work the prototype skipped. Roughly in dependency order.
+
+**Decided:** this phase deliberately breaks the "no build tooling / everything
+client-side" constraint stated above — RapidOCR's result quality justified it; no
+in-browser alternative tested came close. **Budget is $0** — hosting must have a hard
+cost ceiling (free tier, self-hosted on existing hardware, or a provider with a hard
+spending cap/kill-switch), not pay-per-use exposure.
+
+**Verification**
+- [ ] Fuzzy-match recognized text against the real ~1464 module numbers in
+      `field-guide-02.txt` (revive the Tesseract POC's Levenshtein approach) — catch
+      near-misses and filter junk before anything reaches the user.
+
+**Multi-image workflow**
+- [ ] Support uploading several images in one session
+- [ ] Curate one combined list of found labels, each tagged with which image and the
+      coordinates within that image it came from
+
+**Integration**
+- [ ] Decide where this lives in the shipped app — replace `ocr-poc.html`? a new page? a
+      section of `index.html`?
+- [ ] Export / "send to lookup" step: populate the Phase-1 input textarea (or reuse
+      `core.js`'s export format) from the curated, verified label list
+
+**Refactor for production**
+- [ ] Review `rapidocr-poc/server.py`, `poc.js`, `geometry.js` with shipping in mind — the
+      prototype optimized for iterating fast, not for running unattended
+- [ ] Structured logging — mind the no-retention stance below, don't log image content
+- [ ] Config via environment variables (port, rate limits, allowed origins), not
+      hardcoded constants
+
+**Deployment**
+- [ ] Docker image
+- [ ] Pick a hosting provider — must hold to the $0 budget: a free tier, self-hosting on
+      existing hardware, or a provider with a hard spending cap/kill-switch. Pay-per-use
+      serverless is a poor fit here unless it has an enforced hard cap, since an abuse
+      spike would otherwise translate directly into cost.
+- [ ] TLS termination + routing (own subdomain vs. a path under field-guide.pdp8.se)
+
+**Security & cost control** — free, unauthenticated, public-facing service
+- [ ] Per-IP rate limiting / throttling
+- [ ] Bounded concurrency — a queue/semaphore in front of the RapidOCR engine so
+      unbounded parallel requests can't spike CPU/memory
+- [ ] Upload size limit — reject well before ~10-20MB, checked on both sides: client
+      refuses to send an oversized file (saves the round trip), server hard-rejects
+      regardless (the client check is a courtesy, not the actual defense)
+- [ ] Per-request timeout to kill stuck recognitions
+- [ ] Container resource limits (CPU/memory caps; ulimits where meaningful)
+- [ ] Restrict to same-origin/referrer — this is meant to serve the field-guide app, not
+      act as an open public API, which cuts down casual scraping for free
+- [ ] Consider a CDN/edge layer (e.g. Cloudflare) for bot/scraper mitigation rather than
+      building that into the app itself
+- [ ] Explicit no-retention stance: process uploaded images in memory only, never persist
+      or log them — matters for privacy and keeps storage cost at zero
+- [ ] Security review pass before going live (repo has a `/security-review` skill)
 
 ### Phase 3 — presentation depth
 - [ ] Abbreviation glossary / expansions
