@@ -44,6 +44,12 @@ const DELETE_HOVER_RADIUS = 16; // display px, how close the cursor must get to 
 const RESIZE_HANDLE_RADIUS = 6; // display px, drawn half-size of each corner handle
 const RESIZE_HANDLE_HIT_RADIUS = 12; // display px, how close a click must land to grab a handle
 
+// RapidOCR's own config.yaml: Det.limit_side_len (limit_type "min"). A crop
+// whose SHORTER side is under this gets auto-upscaled before detection; at
+// or above it, the crop runs at native resolution — same effective
+// resolution as scanning the full image, no small-crop boost.
+const RAPIDOCR_UPSCALE_SHORT_SIDE = 736;
+
 let img = null; // loaded HTMLImageElement, full source resolution
 let rotation = 0; // 0 | 90 | 180 | 270, clockwise
 let full = null; // offscreen canvas: full-res image at current rotation
@@ -619,8 +625,13 @@ function marginFor(bounds) {
   return Math.max(6, 0.15 * Math.min(w, h));
 }
 
-async function recognizeOneBox(detection) {
-  const bounds = boxBoundsSource(detection.box);
+// A drawn box is really just "a region to scan" — it may hold one label
+// (the common case) or several (a looser region covering a cluttered/tiny-
+// label area). Either way: crop it, send the crop through the same /ocr
+// full detect+recognize pipeline, and keep every result found — not just
+// the best-scoring one — translated back into full-image coordinates.
+async function recognizeRegion(placeholder) {
+  const bounds = boxBoundsSource(placeholder.box);
   const margin = marginFor(bounds);
   const x0 = Math.max(0, Math.floor(bounds.minX - margin));
   const y0 = Math.max(0, Math.floor(bounds.minY - margin));
@@ -628,8 +639,9 @@ async function recognizeOneBox(detection) {
   const y1 = Math.min(full.height, Math.ceil(bounds.maxY + margin));
   const w = x1 - x0;
   const h = y1 - y0;
-  detection.attempted = true;
-  if (w <= 0 || h <= 0) return;
+  const gotUpscaleBoost = Math.min(w, h) < RAPIDOCR_UPSCALE_SHORT_SIDE;
+
+  if (w <= 0 || h <= 0) return { placeholder, found: [], gotUpscaleBoost };
 
   const cropCanvas = document.createElement("canvas");
   cropCanvas.width = w;
@@ -638,31 +650,54 @@ async function recognizeOneBox(detection) {
   const blob = await new Promise((resolve) => cropCanvas.toBlob(resolve, "image/png"));
 
   const resp = await fetch("/ocr", { method: "POST", body: blob });
-  if (!resp.ok) return;
-  const found = await resp.json();
-  if (found.length === 0) return;
-
-  const best = found.reduce((a, b) => (b.score > a.score ? b : a));
-  detection.text = best.text;
-  detection.score = best.score;
-  // best.box is in crop-local coordinates; translate back to full-image space.
-  detection.box = best.box.map(([x, y]) => [x + x0, y + y0]);
+  const found = resp.ok ? await resp.json() : [];
+  // f.box is in crop-local coordinates; translate back to full-image space.
+  const newDetections = found.map((f) => ({
+    id: nextId++,
+    box: f.box.map(([x, y]) => [x + x0, y + y0]),
+    text: f.text,
+    score: f.score,
+    source: "manual",
+  }));
+  return { placeholder, found: newDetections, gotUpscaleBoost };
 }
 
 async function recognizePendingBoxes() {
   const pending = detections.filter((d) => d.score == null && !d.attempted);
   if (pending.length === 0) return;
 
-  setStatusMessage(`Recognizing ${pending.length} box(es)…`);
+  setStatusMessage(`Recognizing ${pending.length} region(s)…`);
   recognizePendingBtn.disabled = true;
   try {
-    await Promise.all(pending.map(recognizeOneBox));
-    const stillPending = pending.filter((d) => d.score == null).length;
-    setStatusMessage(
-      stillPending > 0
-        ? `Recognized ${pending.length - stillPending} of ${pending.length}; ${stillPending} found no text`
-        : `Recognized all ${pending.length} box(es)`,
-    );
+    const results = await Promise.all(pending.map(recognizeRegion));
+
+    let foundCount = 0;
+    let emptyCount = 0;
+    let noBoostCount = 0;
+    for (const { placeholder, found, gotUpscaleBoost } of results) {
+      if (!gotUpscaleBoost) noBoostCount++;
+      if (found.length === 0) {
+        placeholder.attempted = true; // stays visible, marked "no text found"
+        emptyCount++;
+        continue;
+      }
+      foundCount += found.length;
+      const idx = detections.indexOf(placeholder);
+      if (idx >= 0) detections.splice(idx, 1, ...found);
+    }
+    // A replaced placeholder's id no longer exists — drop a now-dangling selection.
+    if (selectedId != null && !detections.some((d) => d.id === selectedId)) selectedId = null;
+
+    const parts = [];
+    if (foundCount > 0) parts.push(`found ${foundCount} box(es) from ${pending.length} region(s)`);
+    if (emptyCount > 0) parts.push(`${emptyCount} region(s) found no text`);
+    if (noBoostCount > 0) {
+      parts.push(
+        `${noBoostCount} region(s) had a short side ≥${RAPIDOCR_UPSCALE_SHORT_SIDE}px `
+        + "(no small-crop resolution boost, same as scanning the full image)",
+      );
+    }
+    setStatusMessage(parts.join("; "));
   } finally {
     updateButtons();
     redraw();
