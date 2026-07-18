@@ -20,7 +20,9 @@
 // improves accuracy over skipping detection entirely (0.98 vs 0.89 score on
 // the same label, tested directly against the backend during development).
 
-import { toSource, toDisplay, hitTestBoxes, distance, nearestWithinRadius } from "./geometry.js";
+import {
+  toSource, toDisplay, hitTestBoxes, distance, nearestWithinRadius, pointInPolygon,
+} from "./geometry.js";
 
 const fileInput = document.getElementById("file");
 const display = document.getElementById("stage");
@@ -39,6 +41,8 @@ const MAX_SCALE = 8;
 const CLICK_THRESHOLD_PX = 4; // display px; below this, pointerup is a "click" not a drag
 const DELETE_HOTSPOT_RADIUS = 8; // display px, drawn size of the delete-X
 const DELETE_HOVER_RADIUS = 16; // display px, how close the cursor must get to reveal it
+const RESIZE_HANDLE_RADIUS = 6; // display px, drawn half-size of each corner handle
+const RESIZE_HANDLE_HIT_RADIUS = 12; // display px, how close a click must land to grab a handle
 
 let img = null; // loaded HTMLImageElement, full source resolution
 let rotation = 0; // 0 | 90 | 180 | 270, clockwise
@@ -51,10 +55,13 @@ let nextId = 1;
 let selectedId = null;
 let draftBox = null; // { x0, y0, x1, y1 } in source coords, while drawing a new box
 
-let dragging = null; // null | "pan" | "draw" | "select-candidate"
+let dragging = null; // null | "pan" | "draw" | "select-candidate" | "move" | "resize"
 let panStart = null; // { px, py, vx, vy }
 let selectCandidateId = null;
 let pointerDownDisplayPos = null;
+let editStartBounds = null; // { minX, minY, maxX, maxY }, source coords, at drag start
+let editStartSource = null; // pointer's source-space position at drag start (for "move")
+let resizeHandleIndex = null; // which corner (see cornersOf), for "resize"
 let hoverDeleteId = null; // id of the box whose delete-X is currently shown
 let hoverBoxId = null; // id of the box the cursor is currently over (declutter: reveals full label)
 
@@ -191,11 +198,13 @@ function boxBoundsSource(box) {
   };
 }
 
-// Delete-X sits at the box's top-right corner, in display space (view-
-// dependent) so it tracks pan/zoom correctly.
+// Delete-X floats just above the box's top-center, in display space (view-
+// dependent, so it tracks pan/zoom correctly) — kept clear of the corners,
+// which are now resize handles.
 function deleteHotspotDisplayPos(detection) {
   const b = boxBoundsSource(detection.box);
-  return toDisplay({ x: b.maxX, y: b.minY }, view);
+  const topCenter = toDisplay({ x: (b.minX + b.maxX) / 2, y: b.minY }, view);
+  return { x: topCenter.x, y: topCenter.y - 14 };
 }
 
 // A box's delete-X shows if it's hovered near, OR selected — selecting a
@@ -206,6 +215,65 @@ function visibleDeleteHotspotIds() {
   if (selectedId != null) ids.add(selectedId);
   if (hoverDeleteId != null) ids.add(hoverDeleteId);
   return ids;
+}
+
+// Corner order: 0=top-left, 1=top-right, 2=bottom-right, 3=bottom-left —
+// used consistently for both drawing handles and resizing from one.
+function cornersOf(bounds) {
+  return [
+    { x: bounds.minX, y: bounds.minY },
+    { x: bounds.maxX, y: bounds.minY },
+    { x: bounds.maxX, y: bounds.maxY },
+    { x: bounds.minX, y: bounds.maxY },
+  ];
+}
+
+function selectedDetection() {
+  return selectedId == null ? null : detections.find((d) => d.id === selectedId);
+}
+
+function drawResizeHandles() {
+  const detection = selectedDetection();
+  if (!detection) return;
+  const bounds = boxBoundsSource(detection.box);
+  for (const corner of cornersOf(bounds)) {
+    const p = toDisplay(corner, view);
+    ctx.fillStyle = "#fff";
+    ctx.strokeStyle = "#3498db";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.rect(
+      p.x - RESIZE_HANDLE_RADIUS, p.y - RESIZE_HANDLE_RADIUS,
+      RESIZE_HANDLE_RADIUS * 2, RESIZE_HANDLE_RADIUS * 2,
+    );
+    ctx.fill();
+    ctx.stroke();
+  }
+}
+
+// Given which corner (see cornersOf) is being dragged to source point `sp`,
+// return the resulting {x0,y0,x1,y1} — the opposite corner stays fixed.
+// normalizedRectBox() (already used for drawing new boxes) handles the
+// min/max swap if the drag crosses over the opposite corner.
+function resizedBounds(handleIndex, sp, startBounds) {
+  const b = startBounds;
+  switch (handleIndex) {
+    case 0: return { x0: sp.x, y0: sp.y, x1: b.maxX, y1: b.maxY };
+    case 1: return { x0: b.minX, y0: sp.y, x1: sp.x, y1: b.maxY };
+    case 2: return { x0: b.minX, y0: b.minY, x1: sp.x, y1: sp.y };
+    default: return { x0: sp.x, y0: b.minY, x1: b.maxX, y1: sp.y };
+  }
+}
+
+// Editing a box invalidates whatever recognition it had (the region it
+// covers just changed), so treat it as pending again and mark it "manual"
+// so a later Run OCR won't discard the edit.
+function applyEditedBox(detection, newBox) {
+  detection.box = newBox;
+  detection.text = null;
+  detection.score = null;
+  detection.attempted = false;
+  detection.source = "manual";
 }
 
 function drawDeleteHotspot() {
@@ -255,6 +323,7 @@ function redrawCanvas() {
   }
 
   drawDeleteHotspot();
+  drawResizeHandles();
 }
 
 function redraw() {
@@ -317,6 +386,28 @@ display.addEventListener("pointerdown", (e) => {
   }
 
   const sp = toSource(p, view);
+
+  if (selectedId != null) {
+    const current = selectedDetection();
+    if (current) {
+      const bounds = boxBoundsSource(current.box);
+      const handlePositions = cornersOf(bounds).map((c) => toDisplay(c, view));
+      const handleIdx = nearestWithinRadius(p, handlePositions, RESIZE_HANDLE_HIT_RADIUS);
+      if (handleIdx >= 0) {
+        dragging = "resize";
+        resizeHandleIndex = handleIdx;
+        editStartBounds = bounds;
+        return;
+      }
+      if (pointInPolygon(sp, current.box)) {
+        dragging = "move";
+        editStartBounds = bounds;
+        editStartSource = sp;
+        return;
+      }
+    }
+  }
+
   const hitIndex = hitTestBoxes(sp, detections);
   if (hitIndex >= 0) {
     dragging = "select-candidate";
@@ -369,10 +460,24 @@ display.addEventListener("pointermove", (e) => {
     const sp = toSource(p, view);
     draftBox.x1 = sp.x;
     draftBox.y1 = sp.y;
-    redraw();
+    redrawCanvas();
+  } else if (dragging === "move") {
+    const sp = toSource(p, view);
+    const dx = sp.x - editStartSource.x;
+    const dy = sp.y - editStartSource.y;
+    const b = editStartBounds;
+    selectedDetection().box = normalizedRectBox({
+      x0: b.minX + dx, y0: b.minY + dy, x1: b.maxX + dx, y1: b.maxY + dy,
+    });
+    redrawCanvas();
+  } else if (dragging === "resize") {
+    const sp = toSource(p, view);
+    const bounds = resizedBounds(resizeHandleIndex, sp, editStartBounds);
+    selectedDetection().box = normalizedRectBox(bounds);
+    redrawCanvas();
   }
   // "select-candidate": no visual feedback until pointerup, by design —
-  // avoids half-built move/resize behavior before that's actually wired up.
+  // a click should select before its handles/move-body become draggable.
 });
 
 display.addEventListener("pointerup", (e) => {
@@ -397,6 +502,16 @@ display.addEventListener("pointerup", (e) => {
   } else if (dragging === "select-candidate") {
     selectedId = selectedId === selectCandidateId ? null : selectCandidateId;
     selectCandidateId = null;
+  } else if (dragging === "move" || dragging === "resize") {
+    const detection = selectedDetection();
+    if (moved >= CLICK_THRESHOLD_PX) {
+      if (detection) applyEditedBox(detection, detection.box);
+    } else if (dragging === "move") {
+      selectedId = null; // click (no real drag) on the selected box's body: deselect
+    }
+    editStartBounds = null;
+    editStartSource = null;
+    resizeHandleIndex = null;
   }
 
   dragging = null;
