@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RapidOCR POC — field guide handle reader</title>
+<style>
+  body { font-family: sans-serif; margin: 1.5rem; max-width: 60rem; }
+  #controls { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+  #stage { max-width: 100%; height: auto; border: 1px solid #999; display: block; margin-top: 1rem; }
+  #results { font-family: monospace; }
+  #status { color: #555; margin-top: 0.5rem; min-height: 1.2em; }
+</style>
+</head>
+<body>
+  <h1>RapidOCR POC</h1>
+  <p>Load a handle photo, rotate if needed, then run OCR. Boxes are colored by
+  confidence: green &ge;0.9, yellow &ge;0.5, red below.</p>
+  <div id="controls">
+    <input type="file" id="file" accept="image/*">
+    <button id="rotateLeft" disabled>&#8634; Rotate left</button>
+    <button id="rotateRight" disabled>&#8635; Rotate right</button>
+    <button id="runOcr" disabled>Run OCR</button>
+  </div>
+  <div id="status"></div>
+  <canvas id="stage"></canvas>
+  <ul id="results"></ul>
+  <script src="poc.js"></script>
+</body>
+</html>
