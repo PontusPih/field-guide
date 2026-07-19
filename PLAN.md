@@ -182,6 +182,14 @@ spending cap/kill-switch), not pay-per-use exposure.
       source). `do_GET` now handles exactly `/healthz` and `/`, 404s otherwise.
 - [ ] Review `backend/server.py` with shipping in mind — the prototype optimized
       for iterating fast, not for running unattended
+- [x] Local-run packaging (V1) — `backend/requirements.txt` is now the single source
+      of truth for dependency versions (`rapidocr-onnxruntime` stays a separate
+      `--no-deps` install everywhere, to keep the GUI `opencv-python` build out — see
+      `backend/README.md`). Three documented, verified ways to run it locally: Docker
+      (`Dockerfile` now installs from `requirements.txt` instead of an inline list),
+      a venv, or a plain global `pip install`. Root `README.md` added alongside, tying
+      frontend + backend together for someone running the whole app locally. This is
+      about local dev/usage only — the still-open hosting question below is separate.
 - [ ] Structured logging — mind the no-retention stance below, don't log image content.
       A first step exists: `run_ocr()` logs upload size + peak RSS before/after each
       request (`resource.getrusage`), which is what surfaced the memory-ceiling finding

@@ -8,23 +8,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # rapidocr-onnxruntime declares a dependency on opencv-python (the GUI build),
-# which pulls in X11/Qt libs this headless server never uses. Install its
-# other real dependencies explicitly, substitute opencv-python-headless, then
-# install rapidocr-onnxruntime itself with --no-deps so pip never reaches for
-# the GUI build. Versions pinned to match this project's dev .venv.
-RUN pip install --no-cache-dir \
-        numpy==2.5.1 \
-        onnxruntime==1.27.0 \
-        opencv-python-headless==5.0.0.93 \
-        pillow==12.3.0 \
-        pyclipper==1.4.0 \
-        PyYAML==6.0.3 \
-        shapely==2.1.2 \
-        six==1.17.0 \
-        tqdm==4.69.0 \
+# which pulls in X11/Qt libs this headless server never uses. requirements.txt
+# (shared with the venv/global-pip install paths in README.md, so all three
+# stay in sync) already substitutes opencv-python-headless; rapidocr-
+# onnxruntime itself is installed separately with --no-deps so pip never
+# reaches for the GUI build via its own dependency list.
+WORKDIR /app
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir --no-deps rapidocr-onnxruntime==1.4.4
 
-WORKDIR /app
 COPY server.py ./
 
 EXPOSE 8642
