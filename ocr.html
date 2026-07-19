@@ -7,12 +7,15 @@
 <style>
   :root { color-scheme: light dark; }
   body { font-family: system-ui, sans-serif; margin: 1.5rem auto; max-width: 80rem; padding: 0 1rem; }
-  .back { display: inline-block; margin-bottom: 0.5rem; font-size: 0.9rem;
-           color: #666; text-decoration: none; }
-  .back:hover { text-decoration: underline; }
+  .nav { display: flex; justify-content: space-between; align-items: baseline;
+         margin-bottom: 0.5rem; }
+  .back, .forward { font-size: 0.9rem; color: #666; text-decoration: none; }
+  .back:hover, .forward:hover { text-decoration: underline; }
   h1 { margin-bottom: 0.2rem; }
   #controls { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+  #goToGuide { margin-left: auto; }
   #status { color: #555; margin-top: 0.5rem; min-height: 1.2em; white-space: pre-line; }
+  #status .status-msg { font-family: ui-monospace, monospace; font-size: 0.9rem; }
   #cheatsheet {
     border: 1px solid #ccc; border-radius: 6px; padding: 0.75rem 1rem;
     background: #f7f7f7; font-size: 0.9rem; margin-top: 1rem;
@@ -43,24 +46,21 @@
   }
   .icon-btn:hover { background: #eee; }
 
-  #handoff { margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid #ccc; }
-  #goToGuide { font-size: 1rem; padding: 0.5rem 1rem; cursor: pointer; }
-  #handoff .hint { color: #888; margin: 0.35rem 0 0; }
-
   @media (prefers-color-scheme: dark) {
-    .back { color: #aaa; }
+    .back, .forward { color: #aaa; }
     #cheatsheet { background: #1e1e1e; border-color: #444; }
     #resultsPanel { border-color: #444; }
     .result-row { border-color: #333; }
     .icon-btn { background: #262626; border-color: #444; color: #ddd; }
     .icon-btn:hover { background: #333; }
-    #handoff { border-color: #444; }
-    #handoff .hint { color: #aaa; }
   }
 </style>
 </head>
 <body>
-  <a class="back" href="index.html">&larr; Field guide</a>
+  <div class="nav">
+    <a class="back" href="index.html">&larr; Field guide</a>
+    <a class="forward" href="guide.html">Identify &rarr;</a>
+  </div>
   <h1>Scan</h1>
   <p>Load a handle photo, rotate if needed, pan/zoom, then run OCR. Boxes are
   colored by confidence: green &ge;0.9, yellow &ge;0.5, red below; gray dashed
@@ -76,6 +76,8 @@
     <button id="pruneOverlapping" disabled>Prune overlapping</button>
     <button id="pruneEmpty" disabled>Prune empty</button>
     <button id="deleteSelected" disabled>Delete selected</button>
+    <button id="clearScan" disabled>Clear</button>
+    <button id="goToGuide" disabled>Handoff to identify</button>
   </div>
   <details id="cheatsheet">
     <summary>Mouse / gesture / key shortcuts</summary>
@@ -101,11 +103,6 @@
       <h2>Boxes</h2>
       <ul id="results"></ul>
     </div>
-  </div>
-  <div id="handoff">
-    <button id="goToGuide" disabled>Go to identification &rarr;</button>
-    <p class="hint"><small>Carries every recognized module number over to the identify tool,
-    duplicates included — ten of the same board counts as ten.</small></p>
   </div>
   <script type="module" src="ocr.js"></script>
 </body>

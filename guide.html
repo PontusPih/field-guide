@@ -10,9 +10,10 @@
            padding: 0 1rem; line-height: 1.5; }
     h1 { margin-bottom: 0.2rem; }
     .lede { margin-top: 0; color: #666; }
-    .back { display: inline-block; margin-bottom: 0.5rem; font-size: 0.9rem;
-             color: #666; text-decoration: none; }
-    .back:hover { text-decoration: underline; }
+    .nav { display: flex; justify-content: space-between; align-items: baseline;
+           margin-bottom: 0.5rem; }
+    .back, .forward { font-size: 0.9rem; color: #666; text-decoration: none; }
+    .back:hover, .forward:hover { text-decoration: underline; }
 
     .layout { display: grid; gap: 1.5rem;
               grid-template-columns: minmax(13rem, 16rem) minmax(0, 1fr) 36rem;
@@ -58,7 +59,7 @@
                       max-height: 32rem; margin: 0.75rem 0 0; }
     @media (prefers-color-scheme: dark) {
       .lede, #status, .mod .desc { color: #aaa; }
-      .back { color: #aaa; }
+      .back, .forward { color: #aaa; }
       .option { border-color: #444; }
       .option > h2 small { color: #888; }
       .badge.bus,
@@ -70,7 +71,10 @@
   </style>
 </head>
 <body>
-  <a class="back" href="index.html">&larr; Field guide</a>
+  <div class="nav">
+    <a class="back" href="index.html">&larr; Field guide</a>
+    <a class="forward" href="ocr.html">Scan a board &rarr;</a>
+  </div>
   <h1>Identify</h1>
   <p class="lede">Identify PDP-11 / VAX Q-bus and UNIBUS boards from their module numbers.</p>
 
@@ -79,7 +83,7 @@
       <p class="panel-h">Modules</p>
       <p>Paste module numbers, one per line (revision suffixes like <code>-YA</code> are OK):</p>
       <textarea id="input" spellcheck="false"></textarea>
-      <div><button id="lookup">Look up</button></div>
+      <div><button id="lookup">Look up</button> <button id="clear">Clear</button></div>
       <p id="status">Loading field guide…</p>
     </section>
 

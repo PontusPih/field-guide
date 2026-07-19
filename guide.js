@@ -1,13 +1,22 @@
 "use strict";
 
 // Field guide app — DOM + fetch. All parsing/lookup logic lives in core.js.
+// The input box's contents are remembered across navigation (see
+// REMEMBERED_INPUT_KEY below), so this stays useful after a detour to Scan
+// or the landing page rather than resetting to the sample list.
 
 import { parseGuide, resolve, group, systemHints, busLabel, buildExport } from "./core.js";
 
 const GUIDE_URL = "field-guide-02.txt";
 
-// Numbers handed off from ocr.js's "Go to identification" button land here.
+// Numbers handed off from ocr.js's "Handoff to identify" button land here.
 const SCAN_HANDOFF_KEY = "fieldGuideScan";
+
+// Remembers what's in the input box across navigation (or closing the tab
+// entirely) so leaving Identify and coming back — e.g. via the Scan
+// shortcut — doesn't lose your list. Plain text, so localStorage (unlike
+// ocr.js's IndexedDB use for the scan photo) is more than enough.
+const REMEMBERED_INPUT_KEY = "fieldGuideIdentifyInput";
 
 // A demo stack showing the main cases:
 //  - a complete multi-module option (RK611 = M7900..M7904)
@@ -185,11 +194,32 @@ function runExport() {
 
 // --- boot ---------------------------------------------------------------
 
-// A scan handed off from ocr.js takes priority over the built-in sample —
-// consumed once (removed) so a later plain visit falls back to the sample.
+// A scan handed off from ocr.js wins first (consumed once — removed so a
+// later plain visit doesn't keep reusing it); otherwise fall back to
+// whatever was last remembered, then finally the built-in sample. Whichever
+// wins is also what gets remembered, so a first-ever visit (sample) and a
+// scan handoff both become "the remembered state" for next time too.
+// Explicit null checks (not ||): a remembered value of "" — the Clear button
+// — must stay empty, not fall through to the sample like a falsy "" would.
+const inputEl = document.getElementById("input");
 const handoff = sessionStorage.getItem(SCAN_HANDOFF_KEY);
 if (handoff != null) sessionStorage.removeItem(SCAN_HANDOFF_KEY);
-document.getElementById("input").value = handoff || SAMPLE;
+const remembered = localStorage.getItem(REMEMBERED_INPUT_KEY);
+inputEl.value = handoff != null ? handoff : (remembered != null ? remembered : SAMPLE);
+localStorage.setItem(REMEMBERED_INPUT_KEY, inputEl.value);
+
+inputEl.addEventListener("input", () => {
+  localStorage.setItem(REMEMBERED_INPUT_KEY, inputEl.value);
+});
+
+function clearInput() {
+  if (!inputEl.value.trim()) return;
+  if (!confirm("Clear the module list?")) return;
+  inputEl.value = "";
+  localStorage.setItem(REMEMBERED_INPUT_KEY, "");
+  runLookup();
+}
+document.getElementById("clear").addEventListener("click", clearInput);
 
 document.getElementById("lookup").addEventListener("click", runLookup);
 document.getElementById("download").addEventListener("click", runExport);

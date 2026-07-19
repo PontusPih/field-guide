@@ -140,6 +140,14 @@ spending cap/kill-switch), not pay-per-use exposure.
 - [ ] Support uploading several images in one session
 - [ ] Curate one combined list of found labels, each tagged with which image and the
       coordinates within that image it came from
+- [ ] Resumable per-image sessions, keyed by a SHA-256 checksum of the image (native
+      `crypto.subtle.digest`, no library, single-digit ms for a multi-MB photo — MD5 isn't
+      available in that API, and isn't needed). Today's single-slot IndexedDB persistence
+      (`ocr.js`: one image + its boxes under fixed keys, overwritten by the next upload)
+      would become multiple records keyed by hash, plus UI to list/pick which past scan to
+      resume. Deliberately not built yet — holding off until this phase is actually
+      underway, since it's a real restructure (storage model + a picker UI), not a small
+      tweak on top of the current single-image persistence.
 
 **Integration**
 - [x] Decide where this lives in the shipped app — `index.html` is now a landing page

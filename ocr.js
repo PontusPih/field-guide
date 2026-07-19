@@ -4,7 +4,10 @@
 // inspect it, run OCR against the backend, and edit the resulting boxes
 // (select + delete; draw new ones), then hand the recognized module numbers
 // off to guide.js. Coordinate transforms and hit-testing live in
-// geometry.js as pure functions so they're unit-testable.
+// geometry.js as pure functions so they're unit-testable. The loaded image
+// and its boxes are remembered in IndexedDB (see "session persistence"
+// below) so navigating away and back — or reopening the tab later — picks
+// up right where you left off.
 //
 // Gesture model (chosen after trying a couple of alternatives):
 //   - plain left-drag on empty canvas  -> draw a new box
@@ -36,6 +39,7 @@ const recognizePendingBtn = document.getElementById("recognizePending");
 const pruneOverlappingBtn = document.getElementById("pruneOverlapping");
 const pruneEmptyBtn = document.getElementById("pruneEmpty");
 const deleteBtn = document.getElementById("deleteSelected");
+const clearBtn = document.getElementById("clearScan");
 const goToGuideBtn = document.getElementById("goToGuide");
 const statusEl = document.getElementById("status");
 const resultsEl = document.getElementById("results");
@@ -66,6 +70,7 @@ const RESIZE_HANDLE_HIT_RADIUS = 12; // display px, how close a click must land 
 const RAPIDOCR_UPSCALE_SHORT_SIDE = 736;
 
 let img = null; // loaded HTMLImageElement, full source resolution
+let fileName = ""; // original filename of the loaded image, shown in the info line
 let rotation = 0; // 0 | 90 | 180 | 270, clockwise
 let full = null; // offscreen canvas: full-res image at current rotation
 let view = { scale: 1, x: 0, y: 0 };
@@ -85,6 +90,101 @@ let editStartSource = null; // pointer's source-space position at drag start (fo
 let resizeHandleIndex = null; // which corner (see cornersOf), for "resize"
 let hoverDeleteId = null; // id of the box whose delete-X is currently shown
 let hoverBoxId = null; // id of the box the cursor is currently over (declutter: reveals full label)
+
+// --- session persistence -------------------------------------------------
+// Remembers the loaded image, its rotation, and every box (drawn or
+// recognized) so navigating to guide.html — or closing the tab entirely —
+// and coming back to ocr.html restores exactly where you left off. Uses
+// IndexedDB rather than sessionStorage/localStorage because the image is
+// binary and can be several MB, well past what string-based storage can
+// comfortably hold. The image (rarely rewritten, one put per loaded file)
+// and the box state (small JSON, rewritten after every edit) are separate
+// keys so editing a box doesn't mean re-storing the whole photo.
+const DB_NAME = "field-guide-scan";
+const STORE = "session";
+const IMAGE_KEY = "image";
+const STATE_KEY = "state";
+
+function openDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function dbPut(key, value) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).put(value, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function dbGet(key) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const req = db.transaction(STORE, "readonly").objectStore(STORE).get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function dbDelete(key) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).delete(key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// Storing the File directly (not just its bytes) means IndexedDB's
+// structured clone keeps its .name intact — retrieved later via
+// restoreSession() to show what was loaded, since the native file input
+// can't be told to display a filename it didn't itself set.
+function persistImage(file) {
+  dbPut(IMAGE_KEY, file).catch((err) => console.warn("Could not save scan image:", err));
+}
+
+function persistState() {
+  dbPut(STATE_KEY, { rotation, detections }).catch((err) => console.warn("Could not save scan state:", err));
+}
+
+async function clearSession() {
+  if (!img && detections.length === 0) return;
+  if (!confirm("Clear the loaded photo and all boxes?")) return;
+
+  img = null;
+  fileName = "";
+  full = null;
+  rotation = 0;
+  view = { scale: 1, x: 0, y: 0 };
+  minScale = 1;
+  detections = [];
+  nextId = 1;
+  selectedId = null;
+  draftBox = null;
+  hoverDeleteId = null;
+  hoverBoxId = null;
+
+  fileInput.value = "";
+  ctx.clearRect(0, 0, display.width, display.height);
+  updateMeta();
+  updateButtons();
+  renderResultsList();
+
+  try {
+    await Promise.all([dbDelete(IMAGE_KEY), dbDelete(STATE_KEY)]);
+  } catch (err) {
+    console.warn("Could not clear saved scan session:", err);
+  }
+}
+clearBtn.addEventListener("click", clearSession);
 
 function rotatedCanvas(image, rotationDeg) {
   const c = document.createElement("canvas");
@@ -129,10 +229,17 @@ function resetView({ preserveDetections = false } = {}) {
   redraw();
 }
 
+// Info-line text: filename (if known) before the resolution, so it reads as
+// "what this is, then its details" — shared by updateMeta() (the idle line)
+// and setStatusMessage() (which prepends this same line to a status message).
+function metaLine() {
+  if (!full) return "";
+  const name = fileName ? `${fileName} · ` : "";
+  return `${name}${full.width}×${full.height}px · rotation ${rotation}° · zoom ${Math.round(view.scale * 100)}%`;
+}
+
 function updateMeta() {
-  statusEl.textContent = full
-    ? `${full.width}×${full.height}px · rotation ${rotation}° · zoom ${Math.round(view.scale * 100)}%`
-    : "";
+  statusEl.textContent = metaLine();
 }
 
 function clampView() {
@@ -363,6 +470,7 @@ function redrawCanvas() {
 function redraw() {
   redrawCanvas();
   renderResultsList();
+  persistState();
 }
 
 function normalizedRectBox(b) {
@@ -435,6 +543,7 @@ function updateButtons() {
   pruneOverlappingBtn.disabled = computeOverlapWarnings().size === 0;
   pruneEmptyBtn.disabled = !detections.some((d) => d.score == null && d.attempted);
   goToGuideBtn.disabled = !detections.some((d) => d.score != null);
+  clearBtn.disabled = !hasImage && detections.length === 0;
 }
 
 // The canvas's rendered CSS size can differ from its internal pixel buffer
@@ -946,11 +1055,17 @@ function renderResultsList() {
   });
 }
 
+// The meta line (filename/resolution/rotation/zoom) stays regular text; the
+// message half is wrapped in its own monospace span so it visually reads as
+// a distinct "system message" rather than blending into the description.
 function setStatusMessage(msg) {
-  const meta = full
-    ? `${full.width}×${full.height}px · rotation ${rotation}° · zoom ${Math.round(view.scale * 100)}%`
-    : "";
-  statusEl.textContent = meta ? `${meta}\n${msg}` : msg;
+  const meta = metaLine();
+  statusEl.textContent = "";
+  if (meta) statusEl.append(`${meta} — `);
+  const span = document.createElement("span");
+  span.className = "status-msg";
+  span.textContent = msg;
+  statusEl.append(span);
 }
 
 fileInput.addEventListener("change", () => {
@@ -960,15 +1075,53 @@ fileInput.addEventListener("change", () => {
   const nextImg = new Image();
   nextImg.onload = () => {
     img = nextImg;
+    fileName = file.name; // set before resetView() so its info-line update includes it
     rotation = 0;
     detections = [];
     selectedId = null;
     resetView();
     updateButtons();
     URL.revokeObjectURL(url);
+    persistImage(file); // new photo: overwrite whatever session was remembered before
   };
   nextImg.src = url;
 });
+
+// On boot, restore a previously-remembered image + boxes (if any) before
+// anything else — lets navigating away from Scan and back, or just closing
+// and reopening the tab, pick back up where you left off. Runs unawaited;
+// there's nothing else on the page that depends on it finishing.
+async function restoreSession() {
+  let blob, state;
+  try {
+    [blob, state] = await Promise.all([dbGet(IMAGE_KEY), dbGet(STATE_KEY)]);
+  } catch (err) {
+    console.warn("Could not restore previous scan session:", err);
+    return;
+  }
+  if (!blob) return;
+
+  const url = URL.createObjectURL(blob);
+  const nextImg = new Image();
+  const loaded = await new Promise((resolve) => {
+    nextImg.onload = () => resolve(true);
+    nextImg.onerror = () => resolve(false);
+    nextImg.src = url;
+  });
+  URL.revokeObjectURL(url);
+  if (!loaded) return;
+
+  img = nextImg;
+  fileName = blob.name || ""; // set before resetView() so its info-line update includes it
+  rotation = state?.rotation || 0;
+  detections = state?.detections || [];
+  nextId = detections.reduce((max, d) => Math.max(max, d.id), 0) + 1;
+  resetView({ preserveDetections: true });
+  updateButtons();
+  const label = fileName ? `"${fileName}"` : "previous scan";
+  setStatusMessage(`Restored ${label} (${detections.length} box(es))`);
+}
+restoreSession();
 
 // Collate every recognized (non-empty, non-pending) detection's text and hand
 // it to guide.js via sessionStorage — the same mechanism a plain page
