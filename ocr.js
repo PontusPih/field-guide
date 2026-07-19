@@ -4,8 +4,7 @@
 // inspect it, run OCR against the backend, and edit the resulting boxes
 // (select + delete; draw new ones), then hand the recognized module numbers
 // off to guide.js. Coordinate transforms and hit-testing live in
-// rapidocr-poc/geometry.js as pure functions so they're unit-testable
-// (reused from the prototype rather than duplicated).
+// geometry.js as pure functions so they're unit-testable.
 //
 // Gesture model (chosen after trying a couple of alternatives):
 //   - plain left-drag on empty canvas  -> draw a new box
@@ -25,7 +24,7 @@
 import {
   toSource, toDisplay, hitTestBoxes, distance, nearestWithinRadius, pointInPolygon,
   boundsOf, overlapArea,
-} from "./rapidocr-poc/geometry.js";
+} from "./geometry.js";
 
 const fileInput = document.getElementById("file");
 const display = document.getElementById("stage");
@@ -44,7 +43,7 @@ const resultsEl = document.getElementById("results");
 // The OCR backend only runs in Python (can't stay client-side like the rest
 // of the app), so it's a separate origin from this static page. No
 // production host is picked yet (see PLAN.md, Phase 2b) — point this at a
-// local rapidocr-poc/server.py for now and update it once hosting lands.
+// local backend/server.py for now and update it once hosting lands.
 const BACKEND_URL = "http://localhost:8642";
 
 // Key guide.js reads on boot to pre-fill its input instead of the sample text.

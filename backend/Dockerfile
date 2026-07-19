@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # which pulls in X11/Qt libs this headless server never uses. Install its
 # other real dependencies explicitly, substitute opencv-python-headless, then
 # install rapidocr-onnxruntime itself with --no-deps so pip never reaches for
-# the GUI build. Versions pinned to match the prototype's dev .venv.
+# the GUI build. Versions pinned to match this project's dev .venv.
 RUN pip install --no-cache-dir \
         numpy==2.5.1 \
         onnxruntime==1.27.0 \
@@ -25,7 +25,7 @@ RUN pip install --no-cache-dir \
     && pip install --no-cache-dir --no-deps rapidocr-onnxruntime==1.4.4
 
 WORKDIR /app
-COPY server.py poc.html poc.js geometry.js ./
+COPY server.py ./
 
 EXPOSE 8642
 CMD ["python", "server.py"]

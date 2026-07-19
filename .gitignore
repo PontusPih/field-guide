@@ -1,3 +1,3 @@
 .idea
-rapidocr-poc/.venv
-rapidocr-poc/__pycache__
+backend/.venv
+**/__pycache__

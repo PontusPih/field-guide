@@ -37,12 +37,24 @@ A user with a stack of unknown boards enters/scans their module numbers. The app
 
 ## Architecture
 
-- `index.html` — UI shell + styling; three-column layout (input · results · export).
+- `index.html` — landing page: two boxes (Scan / Identify) with an arrow showing
+  the workflow direction; links to `ocr.html` and `guide.html`.
+- `guide.html` / `guide.js` — the identify tool: three-column layout (input ·
+  results · export). `guide.js` handles fetch, DOM render, and file download;
+  imports `core.js`. Also reads a scan handed off from `ocr.js` via
+  `sessionStorage` on load, in place of the built-in sample stack.
 - `core.js` — pure logic: parse, index (by module / base / option), resolve, group,
-  export text. No DOM — imported by both the app and the tests.
-- `app.js` — fetch, DOM render, and file download; imports `core.js`.
+  export text. No DOM — imported by `guide.js` and the tests.
+- `ocr.html` / `ocr.js` — the scan tool: load/rotate/pan/zoom a board photo, run
+  OCR against `backend/server.py`, edit the resulting boxes, then hand the
+  recognized module numbers to `guide.html`. Imports `geometry.js`.
+- `geometry.js` — pure view-transform/hit-testing math for `ocr.js`'s canvas. No
+  DOM — imported by `ocr.js` and its test.
+- `backend/` — the Python OCR service (`server.py`, `Dockerfile`); see Phase 2b.
+  Not client-side, so it stays a separate service from the rest of the app.
 - `test/` — Node built-in test runner (`node --test`), zero dependencies:
-  `core.test.js` (fixture unit tests) + `guide.test.js` (real-file integration).
+  `core.test.js` + `guide.test.js` (parser/lookup logic) and `geometry.test.js`
+  (canvas math).
 - `field-guide-02.txt` — read-only source data (2002 edition).
 
 ## Roadmap
@@ -73,10 +85,11 @@ A user with a stack of unknown boards enters/scans their module numbers. The app
       sets + 2 partial") in the center column and the export.
 
 ### Phase 2 — image recognition
-- [x] Capture / upload a board photo — `ocr-poc.html`/`ocr-poc.js`: file upload, 90°-step
-      rotate, zoom/pan, manual crop-box draw (box stored in source-image coordinates so
-      it survives pan/zoom).
-- [ ] OCR the handle text (module number, optional revision)
+- [x] Capture / upload a board photo — first built as `ocr-poc.html`/`ocr-poc.js`:
+      file upload, 90°-step rotate, zoom/pan, manual crop-box draw (box stored in
+      source-image coordinates so it survives pan/zoom). Retired once `ocr.html`/
+      `ocr.js` (Phase 2b) shipped the same capability plus real OCR.
+- [x] OCR the handle text (module number, optional revision)
       Tried: Tesseract.js in-browser, tuned hard — PSM.SINGLE_LINE, character whitelist
       narrowed to the alphabet actually used across all 1464 modules in
       `field-guide-02.txt` (no I/Z), grayscale + contrast-stretch + automatic polarity
@@ -95,14 +108,15 @@ A user with a stack of unknown boards enters/scans their module numbers. The app
       frontend): load/rotate/pan/zoom, automatic detection, manual box editing
       (draw/select/delete/move/resize/recognize) including multi-result regions and
       overlap/empty cleanup. Node-tested geometry, Python-tested backend.
-      Next: turn the prototype into the shipped feature — see Phase 2b below.
-- [ ] Feed recognized numbers into the Phase-1 lookup — superseded by Phase 2b's
-      integration + export step.
+      Shipped as `ocr.html`/`ocr.js` + `backend/` — see Phase 2b.
+- [x] Feed recognized numbers into the Phase-1 lookup — done via Phase 2b's
+      integration + export step (the "Go to identification" handoff).
 
 ### Phase 2b — RapidOCR service: prototype to production
-`rapidocr-poc/` proved the approach; shipping it needs a real backend service (RapidOCR
-only runs in Python, so this can't stay client-side like the rest of the app) plus
-productionizing work the prototype skipped. Roughly in dependency order.
+The `rapidocr-poc/` prototype proved the approach and has since been renamed to
+`backend/` and folded into the shipped app (`ocr.html`/`ocr.js`, the prototype's
+`poc.html`/`poc.js` retired); shipping it for real still needs productionizing work
+the prototype skipped. Roughly in dependency order.
 
 **Decided:** this phase deliberately breaks the "no build tooling / everything
 client-side" constraint stated above — RapidOCR's result quality justified it; no
@@ -124,11 +138,13 @@ spending cap/kill-switch), not pay-per-use exposure.
 - [x] Decide where this lives in the shipped app — `index.html` is now a landing page
       with two boxes (Scan / Identify) and an arrow showing the workflow direction;
       the old `index.html`/`app.js` identify tool moved to `guide.html`/`guide.js`
-      unchanged, and a new `ocr.html`/`ocr.js` (adapted from `rapidocr-poc/poc.html`/
-      `poc.js`, reusing `rapidocr-poc/geometry.js` rather than duplicating it) is the
-      shipped scan tool. `rapidocr-poc/` itself is untouched — still the dev/prototype
-      environment for the Python backend. The older Tesseract-based `ocr-poc.html`/
-      `ocr-poc.js` are superseded but left in place, not deleted.
+      unchanged, and a new `ocr.html`/`ocr.js` (adapted from the prototype's
+      `poc.html`/`poc.js`) is the shipped scan tool. Once `ocr.html`/`ocr.js` were
+      confirmed working end-to-end, the prototype pieces were retired for real:
+      `rapidocr-poc/` renamed to `backend/` (it's the real OCR service now, not a
+      POC), its `poc.html`/`poc.js` deleted, `geometry.js` moved to the repo root
+      (its only consumer is `ocr.js`), and the dead `app.js` plus the older
+      Tesseract-based `ocr-poc.html`/`ocr-poc.js` deleted too.
 - [x] Export / "send to lookup" step — `ocr.html` has a "Go to identification →"
       button (enabled once at least one box is recognized). It collects every
       detection with non-null text, dedupes case-insensitively, and hands the list to
@@ -137,14 +153,20 @@ spending cap/kill-switch), not pay-per-use exposure.
       handoff since both pages are static/client-side.
 - [x] Same-origin problem — `ocr.js` now points at a `BACKEND_URL` constant
       (currently `http://localhost:8642`, needs updating once real hosting is
-      picked) instead of a relative `/ocr`. `rapidocr-poc/server.py` sends
+      picked) instead of a relative `/ocr`. `backend/server.py` sends
       `Access-Control-Allow-Origin: *` (plus an `OPTIONS` preflight handler) on
-      `/ocr` responses so the cross-origin fetch works; `poc.html`/`poc.js`'s
-      same-origin requests are unaffected by the added headers.
+      `/ocr` responses so the cross-origin fetch works. The backend no longer
+      serves any frontend at all (see Refactor bullet below), so same-origin
+      requests aren't a case to preserve anymore.
 
 **Refactor for production**
-- [ ] Review `rapidocr-poc/server.py`, `poc.js`, `geometry.js` with shipping in mind — the
-      prototype optimized for iterating fast, not for running unattended
+- [x] Drop static file serving — `backend/server.py`'s `Handler` no longer extends
+      `SimpleHTTPRequestHandler`/serves `STATIC_DIR` (that only ever existed for
+      `poc.html`/`poc.js`, now deleted); serving the whole `backend/` directory
+      over HTTP was a latent exposure (e.g. `GET /server.py` would have returned
+      source). `do_GET` now handles exactly `/healthz` and `/`, 404s otherwise.
+- [ ] Review `backend/server.py` with shipping in mind — the prototype optimized
+      for iterating fast, not for running unattended
 - [ ] Structured logging — mind the no-retention stance below, don't log image content.
       A first step exists: `run_ocr()` logs upload size + peak RSS before/after each
       request (`resource.getrusage`), which is what surfaced the memory-ceiling finding

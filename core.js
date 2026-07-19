@@ -1,7 +1,7 @@
 "use strict";
 
-// Field guide — pure logic (no DOM, no fetch). Imported by app.js (browser) and
-// by the test suite (Node). Keeps the read-only field-guide-99.txt the source of
+// Field guide — pure logic (no DOM, no fetch). Imported by guide.js (browser) and
+// by the test suite (Node). Keeps the read-only field-guide-02.txt the source of
 // truth: parsing turns it into lookup indexes at runtime.
 
 // Bus codes used in the 2002 guide: U=UNIBUS, Q=Qbus, CTI=CTI-Bus (Professional),

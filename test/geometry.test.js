@@ -1,7 +1,7 @@
 "use strict";
 
-// Unit tests for the pure view-transform/hit-test math used by poc.js.
-// Run: `node --test rapidocr-poc/test/geometry.test.js`
+// Unit tests for the pure view-transform/hit-test math used by ocr.js.
+// Run: `node --test` (or `node --test test/geometry.test.js`)
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

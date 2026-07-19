@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
-"""Local backend for the RapidOCR POC.
+"""OCR backend for the field guide's Scan tool (ocr.html/ocr.js).
 
-Serves the static frontend (poc.html/poc.js) and a POST /ocr endpoint that
-runs the full RapidOCR detection+recognition pipeline on an uploaded image
-and returns the found boxes as JSON.
+RapidOCR only runs in Python, so this stays a separate service from the
+static, client-side app on GitHub Pages. A POST /ocr endpoint runs the full
+RapidOCR detection+recognition pipeline on an uploaded image and returns the
+found boxes as JSON; no frontend is served from here.
 """
 import json
 import os
 import resource
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from rapidocr_onnxruntime import RapidOCR
 
-STATIC_DIR = Path(__file__).resolve().parent
 PORT = int(os.environ.get("PORT", 8642))
 
 engine = RapidOCR()
@@ -44,27 +43,29 @@ def run_ocr(image_bytes):
     ]
 
 
-class Handler(SimpleHTTPRequestHandler):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, directory=str(STATIC_DIR), **kwargs)
+class Handler(BaseHTTPRequestHandler):
+    def send_text(self, status, body):
+        body = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_GET(self):
+        # No frontend lives here — just a health/liveness surface. "/" stays
+        # a cheap 200 so it still works as PLAN.md's pre-flight/cold-start
+        # ping (models are loaded before serve_forever() below, so any
+        # response at all implies they're warm).
         if self.path == "/healthz":
-            body = b"ok"
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        if self.path == "/":
-            self.path = "/poc.html"
-        super().do_GET()
+            self.send_text(200, "ok")
+        elif self.path == "/":
+            self.send_text(200, "field guide OCR backend")
+        else:
+            self.send_error(404, "Not found")
 
     def send_cors_headers(self):
-        # The shipped app (ocr.js, on GitHub Pages) is a different origin
-        # from this backend, unlike poc.js which is served from here too —
-        # same-origin requests are unaffected by these headers either way.
+        # ocr.js runs on GitHub Pages, a different origin from this backend.
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
@@ -103,7 +104,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 def main():
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-    print(f"RapidOCR POC server on http://0.0.0.0:{PORT}")
+    print(f"OCR backend on http://0.0.0.0:{PORT}")
     server.serve_forever()
 
 
