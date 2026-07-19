@@ -152,9 +152,17 @@ export function resolve(idx, query) {
 
 // Group resolved entries by option. A board is identified by its base module
 // number; revisions (suffixes) collapse onto that board rather than counting as
-// separate members. Each option gets its board list (present/missing, with
-// revisions listed) and a complete flag. Also returns standalone modules and
-// unknown numbers.
+// separate members. Duplicate input lines (the same module scanned/typed more
+// than once) count as separate copies — quantities matter for set allocation
+// below, not just presence. Also returns standalone modules and unknown numbers.
+//
+// Each option strives to report **complete sets**: `fullSets` is how many full
+// copies of the option can be assembled from the held quantities (the minimum
+// held count across its required boards — zero if any required board is held
+// zero times). Any copies left over once `fullSets` are assembled (some boards
+// held more than others) are reported separately as `leftover`, shaped just
+// like the primary board list but with counts reduced by `fullSets` — the
+// "second, partial option with the boards that didn't make a complete set."
 export function group(idx, resolvedList) {
   const options = new Map();
   const standalone = [];
@@ -163,13 +171,22 @@ export function group(idx, resolvedList) {
   for (const r of resolvedList) {
     if (!r) continue;
     if (r.entries.length === 0) { unknown.push(r.query); continue; }
+    // One resolved input line is one physical board, even when an approx
+    // (suffix-insensitive) match returns several revision entries that share
+    // a base — count that base once per line, not once per matched entry.
+    const touched = new Map(); // option -> Set<base>
     for (const e of r.entries) {
       if (e.option) {
-        if (!options.has(e.option)) options.set(e.option, { presentBases: new Set() });
-        options.get(e.option).presentBases.add(baseOf(e.module));
+        if (!touched.has(e.option)) touched.set(e.option, new Set());
+        touched.get(e.option).add(baseOf(e.module));
       } else {
         standalone.push(e);
       }
+    }
+    for (const [optName, bases] of touched) {
+      if (!options.has(optName)) options.set(optName, { presentCounts: new Map() });
+      const counts = options.get(optName).presentCounts;
+      for (const b of bases) counts.set(b, (counts.get(b) || 0) + 1);
     }
   }
 
@@ -178,33 +195,74 @@ export function group(idx, resolvedList) {
 
     // Collapse members onto their base board; the bare (suffix-less) entry is the
     // board's canonical description, the rest are revisions.
-    const boards = new Map();
+    const boardsByBase = new Map();
     for (const e of members) {
       const b = baseOf(e.module);
-      if (!boards.has(b)) boards.set(b, { base: b, canonical: null, entries: [] });
-      const bd = boards.get(b);
+      if (!boardsByBase.has(b)) boardsByBase.set(b, { base: b, canonical: null, entries: [] });
+      const bd = boardsByBase.get(b);
       bd.entries.push(e);
       if (e.module.toUpperCase() === b) bd.canonical = e;
     }
-
-    const boardList = [...boards.values()].map((bd) => {
+    const describe = (bd) => {
       const canonical = bd.canonical || bd.entries[0];
-      const revisions = bd.entries.filter((e) => e !== canonical);
-      return { base: bd.base, canonical, revisions, present: g.presentBases.has(bd.base) };
-    }).sort((a, b) => a.base.localeCompare(b.base));
+      return { base: bd.base, canonical, revisions: bd.entries.filter((e) => e !== canonical) };
+    };
 
-    g.boards = boardList;
-    g.knownBases = boardList.map((b) => b.base);
-    g.presentCount = boardList.filter((b) => b.present).length;
-    g.complete = boardList.length > 1 && boardList.every((b) => b.present);
+    const orderedBases = [...boardsByBase.keys()].sort((a, b) => a.localeCompare(b));
+    const countOf = (base) => g.presentCounts.get(base) || 0;
+    const boardsAt = (countFor) => orderedBases.map((base) => {
+      const count = countFor(base);
+      return { ...describe(boardsByBase.get(base)), present: count > 0, count };
+    });
+
+    g.knownBases = orderedBases;
     g.bus = members[0] ? members[0].bus : "";
+    g.boards = boardsAt(countOf);
+    g.presentCount = g.boards.filter((b) => b.present).length;
+
+    g.fullSets = orderedBases.length ? Math.min(...orderedBases.map(countOf)) : 0;
+    g.complete = g.fullSets > 0;
+
+    const hasLeftover = g.complete && orderedBases.some((base) => countOf(base) - g.fullSets > 0);
+    g.leftover = hasLeftover ? (() => {
+      const boards = boardsAt((base) => countOf(base) - g.fullSets);
+      return { boards, presentCount: boards.filter((b) => b.present).length };
+    })() : null;
+
+    delete g.presentCounts; // internal accumulator; g.boards[].count is the public form
   }
 
   return { options, standalone, unknown };
 }
 
+// Status text for an option's primary (non-leftover) listing: "complete" (or
+// "×N complete" for N>1 full sets) once fullSets>=1, else the x/y present-
+// boards count — blank for single-board options, where per-board ×N counts
+// (see writeBoardLines below) already say everything worth saying.
+function fullSetsStatus(g) {
+  if (g.knownBases.length <= 1) return "";
+  if (g.fullSets > 0) return g.fullSets > 1 ? `×${g.fullSets} complete` : "complete";
+  return `${g.presentCount}/${g.knownBases.length} boards`;
+}
+
+function writeBoardLines(lines, boards, includeMissing) {
+  for (const b of boards) {
+    if (!b.present && !includeMissing) continue;
+    const rev = b.revisions.length
+      ? `  [rev: ${b.revisions.map((r) => r.module.slice(b.base.length)).join(", ")}]`
+      : "";
+    const qty = b.count > 1 ? `  ×${b.count}` : "";
+    const mark = b.present ? "" : "   <-- MISSING";
+    lines.push(`    ${b.base}  ${b.canonical.description}${qty}${rev}${mark}`);
+  }
+}
+
 // Plain-text export of the looked-up modules, grouped by option and sorted.
 // Missing boards are included (clearly marked) only when includeMissing is set.
+// An option with duplicate boards left over after forming its complete set(s)
+// gets a second block right after — same option name, "leftover" status —
+// listing what's left (and, with includeMissing, what that leftover is still
+// missing to become another complete set).
 // exportedAt is passed in (the browser stamps it) so this stays pure/testable.
 export function buildExport(idx, resolvedList, { includeMissing = false, exportedAt = "" } = {}) {
   const { options, standalone, unknown } = group(idx, resolvedList);
@@ -212,19 +270,18 @@ export function buildExport(idx, resolvedList, { includeMissing = false, exporte
 
   for (const name of [...options.keys()].sort((a, b) => a.localeCompare(b))) {
     const g = options.get(name);
-    const status = g.knownBases.length > 1
-      ? (g.complete ? "complete" : `${g.presentCount}/${g.knownBases.length} boards`)
-      : "";
+    const status = fullSetsStatus(g);
     lines.push(`${name}  (${busLabel(g.bus)})${status ? "  — " + status : ""}`);
-    for (const b of g.boards) {
-      if (!b.present && !includeMissing) continue;
-      const rev = b.revisions.length
-        ? `  [rev: ${b.revisions.map((r) => r.module.slice(b.base.length)).join(", ")}]`
-        : "";
-      const mark = b.present ? "" : "   <-- MISSING";
-      lines.push(`    ${b.base}  ${b.canonical.description}${rev}${mark}`);
-    }
+    writeBoardLines(lines, g.boards, includeMissing);
     lines.push("");
+
+    if (g.leftover) {
+      lines.push(
+        `${name}  (${busLabel(g.bus)})  — leftover ${g.leftover.presentCount}/${g.knownBases.length} boards`,
+      );
+      writeBoardLines(lines, g.leftover.boards, includeMissing);
+      lines.push("");
+    }
   }
 
   if (standalone.length) {

@@ -970,21 +970,19 @@ fileInput.addEventListener("change", () => {
   nextImg.src = url;
 });
 
-// Collate every recognized (non-empty, non-pending) detection's text into
-// one deduped list and hand it to guide.js via sessionStorage — the same
-// mechanism a plain page navigation can carry state through without a
-// server round-trip. Case-insensitive dedup, first-seen order kept (order
-// roughly tracks where boxes were found/added).
+// Collate every recognized (non-empty, non-pending) detection's text and hand
+// it to guide.js via sessionStorage — the same mechanism a plain page
+// navigation can carry state through without a server round-trip.
+// Deliberately NOT deduped: a real board pile can hold several copies of the
+// same board (e.g. ten of the same RAM card), and guide.js's option grouping
+// now counts quantities to strive for complete sets — collapsing duplicates
+// here would throw that count away before it ever reaches guide.js. Use
+// "Prune overlapping" first if a region got detected more than once by
+// mistake; every box left after that is trusted to be one real board.
 goToGuideBtn.addEventListener("click", () => {
-  const seen = new Set();
-  const numbers = [];
-  for (const d of detections) {
-    if (d.score == null || !d.text) continue;
-    const key = d.text.trim().toUpperCase();
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    numbers.push(d.text.trim());
-  }
+  const numbers = detections
+    .filter((d) => d.score != null && d.text && d.text.trim())
+    .map((d) => d.text.trim());
   if (numbers.length === 0) return;
   sessionStorage.setItem(SCAN_HANDOFF_KEY, numbers.join("\n"));
   location.href = "guide.html";

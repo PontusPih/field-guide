@@ -78,11 +78,18 @@ A user with a stack of unknown boards enters/scans their module numbers. The app
       Fixing this needs the functional taxonomy (Phase 3) + the option→system map.
 - [ ] Add a favicon (currently 404s)
 - [ ] Third-party option list is parsed but not yet surfaced (no module to look up)
-- [ ] **Quantities & set allocation.** Duplicate board numbers count as separate copies
-      (default: treat each as unique). Given the per-board quantities for an option, pack
-      them into as many **complete sets** as possible, then form the remainder into
-      partial sets that are as complete as possible. Show the set breakdown (e.g. "2 full
-      sets + 2 partial") in the center column and the export.
+- [x] **Quantities & set allocation.** Duplicate board numbers (repeated input lines —
+      typed twice, or recognized twice by the scan tool) count as separate copies, tracked
+      per base board (`core.js`'s `group()`: a `presentCounts` accumulator, one per resolved
+      line, replacing the old presence-only `Set`). Packed into as many **complete sets**
+      (`fullSets`, the minimum held count across the option's required boards) as possible;
+      any surplus is reported as `leftover`, shaped like a second, partial instance of the
+      same option — some boards present (real surplus), some "missing" (fully consumed by
+      the complete sets). Rendered as a second card in the center column
+      (`guide.js`'s `appendOptionCards`, dashed border) and a second block in the export
+      (`core.js`'s `buildExport`); board rows show a `×N` count whenever N>1. `ocr.js`'s
+      "Go to identification" handoff no longer dedupes recognized text, so a real pile of
+      duplicate boards carries its true count through to this.
 
 ### Phase 2 — image recognition
 - [x] Capture / upload a board photo — first built as `ocr-poc.html`/`ocr-poc.js`:

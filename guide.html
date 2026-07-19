@@ -32,15 +32,19 @@
     .option { border: 1px solid #ccc; border-radius: 8px; padding: 0.75rem 1rem;
               margin: 0 0 1rem; }
     .option > h2 { margin: 0 0 0.25rem; font-size: 1.1rem; }
+    .option > h2 small { font-weight: 400; color: #888; text-transform: uppercase;
+                          font-size: 0.7rem; letter-spacing: 0.03em; margin-left: 0.2rem; }
     .badge { display: inline-block; font-size: 0.75rem; font-weight: 600;
              padding: 0.1rem 0.5rem; border-radius: 999px; margin-left: 0.5rem;
              vertical-align: middle; }
     .badge.complete { background: #1b7f37; color: #fff; }
     .badge.partial  { background: #b06a00; color: #fff; }
-    .badge.bus      { background: #eee; color: #333; }
+    .badge.bus,
+    .badge.qty      { background: #eee; color: #333; }
     .mod { margin: 0.35rem 0; }
     .mod .num { font-family: ui-monospace, monospace; font-weight: 600; }
     .mod .desc { color: #444; }
+    .mod .qty { font-size: 0.8rem; color: #888; font-weight: 600; }
     .mod .revs { font-size: 0.8rem; color: #888; font-family: ui-monospace, monospace; }
     .mod.missing { opacity: 0.6; }
     .mod.missing .num::after { content: " — missing"; font-weight: 400; font-style: italic; }
@@ -56,7 +60,10 @@
       .lede, #status, .mod .desc { color: #aaa; }
       .back { color: #aaa; }
       .option { border-color: #444; }
-      .badge.bus { background: #333; color: #ddd; }
+      .option > h2 small { color: #888; }
+      .badge.bus,
+      .badge.qty { background: #333; color: #ddd; }
+      .mod .qty { color: #aaa; }
       .hints { background: #1e1e1e; }
       #export-preview { background: #1e1e1e; border-color: #444; }
     }

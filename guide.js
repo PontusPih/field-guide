@@ -38,6 +38,58 @@ function esc(s) {
   return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 }
 
+// One board row. Duplicate copies (count > 1 — the same board scanned/typed
+// more than once) get a "×N" badge alongside its description.
+function boardRowHtml(b) {
+  let html = `<span class="num">${esc(b.base)}</span> ` +
+    `<span class="desc">${esc(b.canonical.description)}</span>`;
+  if (b.count > 1) html += ` <span class="qty">×${b.count}</span>`;
+  if (b.revisions.length) {
+    const revs = b.revisions.map((r) => esc(r.module.slice(b.base.length))).join(", ");
+    html += ` <span class="revs">rev: ${revs}</span>`;
+  }
+  return html;
+}
+
+function appendBoardRows(card, boards) {
+  for (const b of boards) {
+    const row = el("div", "mod" + (b.present ? "" : " missing"));
+    row.innerHTML = boardRowHtml(b);
+    card.appendChild(row);
+  }
+}
+
+// One option can render as two cards: the primary listing (complete sets, or
+// today's familiar x/y-present partial when no full set can be assembled yet)
+// and, only when duplicate boards are left over after forming g.fullSets
+// complete sets, a second "leftover" card — shaped exactly like a normal
+// partial option, since from here it just IS one: the boards that didn't
+// make it into a complete set, some present (surplus copies) and some
+// "missing" (fully used up by the complete sets already pulled out).
+function appendOptionCards(out, name, g) {
+  const card = el("div", "option");
+  const badge = g.knownBases.length > 1
+    ? `<span class="badge ${g.complete ? "complete" : "partial"}">${
+        g.complete
+          ? (g.fullSets > 1 ? `×${g.fullSets} complete options` : "complete option")
+          : `${g.presentCount}/${g.knownBases.length} boards`}</span>`
+    : (g.boards[0].count > 1 ? `<span class="badge qty">×${g.boards[0].count}</span>` : "");
+  card.appendChild(el("h2", null,
+    `${esc(name)} <span class="badge bus">${busLabel(g.bus)}</span>${badge}`));
+  appendBoardRows(card, g.boards);
+  out.appendChild(card);
+
+  if (g.leftover) {
+    const leftCard = el("div", "option leftover");
+    const leftBadge =
+      `<span class="badge partial">${g.leftover.presentCount}/${g.knownBases.length} boards</span>`;
+    leftCard.appendChild(el("h2", null,
+      `${esc(name)} <small>remaining</small> <span class="badge bus">${busLabel(g.bus)}</span>${leftBadge}`));
+    appendBoardRows(leftCard, g.leftover.boards);
+    out.appendChild(leftCard);
+  }
+}
+
 function render(resolvedList) {
   const out = document.getElementById("results");
   out.innerHTML = "";
@@ -45,26 +97,7 @@ function render(resolvedList) {
 
   // Options (grouped by board; revisions collapse onto their base board).
   for (const [name, g] of options) {
-    const card = el("div", "option");
-    const badge = g.knownBases.length > 1
-      ? `<span class="badge ${g.complete ? "complete" : "partial"}">${
-          g.complete ? "complete option" : `${g.presentCount}/${g.knownBases.length} boards`}</span>`
-      : "";
-    card.appendChild(el("h2", null,
-      `${esc(name)} <span class="badge bus">${busLabel(g.bus)}</span>${badge}`));
-
-    for (const b of g.boards) {
-      const row = el("div", "mod" + (b.present ? "" : " missing"));
-      let html = `<span class="num">${esc(b.base)}</span> ` +
-        `<span class="desc">${esc(b.canonical.description)}</span>`;
-      if (b.revisions.length) {
-        const revs = b.revisions.map((r) => esc(r.module.slice(b.base.length))).join(", ");
-        html += ` <span class="revs">rev: ${revs}</span>`;
-      }
-      row.innerHTML = html;
-      card.appendChild(row);
-    }
-    out.appendChild(card);
+    appendOptionCards(out, name, g);
   }
 
   // Standalone modules (no option grouping).

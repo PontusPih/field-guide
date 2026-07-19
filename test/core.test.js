@@ -175,7 +175,47 @@ test("group: complete multi-board option, plus unknown", () => {
   const idx = parseGuide(FIXTURE);
   const full = group(idx, [resolve(idx, "M7900"), resolve(idx, "M7901")]);
   assert.equal(full.options.get("RK611").complete, true);
+  assert.equal(full.options.get("RK611").fullSets, 1);
+  assert.equal(full.options.get("RK611").leftover, null);
   assert.deepEqual(group(idx, [resolve(idx, "M9999")]).unknown, ["M9999"]);
+});
+
+test("group: duplicate boards count as quantity, not just presence", () => {
+  const idx = parseGuide(FIXTURE);
+  // Three M7900s but only one M7901 — RK611 needs one of each, so only one
+  // complete set can be assembled; the extra M7900s are leftover.
+  const stack = ["M7900", "M7900", "M7900", "M7901"].map((m) => resolve(idx, m));
+  const g = group(idx, stack).options.get("RK611");
+  assert.equal(g.boards.find((b) => b.base === "M7900").count, 3);
+  assert.equal(g.boards.find((b) => b.base === "M7901").count, 1);
+  assert.equal(g.fullSets, 1);
+  assert.equal(g.complete, true);
+
+  assert.ok(g.leftover);
+  const leftM7900 = g.leftover.boards.find((b) => b.base === "M7900");
+  const leftM7901 = g.leftover.boards.find((b) => b.base === "M7901");
+  assert.equal(leftM7900.count, 2);
+  assert.equal(leftM7900.present, true);
+  assert.equal(leftM7901.count, 0);
+  assert.equal(leftM7901.present, false);   // fully consumed by the one complete set
+});
+
+test("group: enough duplicates for multiple complete sets leaves no leftover", () => {
+  const idx = parseGuide(FIXTURE);
+  const stack = ["M7900", "M7900", "M7901", "M7901"].map((m) => resolve(idx, m));
+  const g = group(idx, stack).options.get("RK611");
+  assert.equal(g.fullSets, 2);
+  assert.equal(g.complete, true);
+  assert.equal(g.leftover, null);
+});
+
+test("group: single-board option tracks quantity with no leftover concept", () => {
+  const idx = parseGuide(FIXTURE);
+  const stack = ["G401", "G401", "G401"].map((m) => resolve(idx, m));
+  const g = group(idx, stack).options.get("MS11-BR");
+  assert.equal(g.boards[0].count, 3);
+  assert.equal(g.fullSets, 3);
+  assert.equal(g.leftover, null);
 });
 
 test("buildExport: grouped, sorted, timestamped; missing hidden then marked", () => {
@@ -193,6 +233,24 @@ test("buildExport: grouped, sorted, timestamped; missing hidden then marked", ()
   assert.doesNotMatch(hidden, /M782/);
   const shown = buildExport(idx, partial, { includeMissing: true });
   assert.match(shown, /M782.*<-- MISSING/);
+});
+
+test("buildExport: leftover duplicates get their own block with quantities", () => {
+  const idx = parseGuide(FIXTURE);
+  const stack = ["M7900", "M7900", "M7900", "M7901"].map((m) => resolve(idx, m));
+
+  const text = buildExport(idx, stack, { includeMissing: true, exportedAt: "t" });
+  assert.match(text, /RK611 {2}\(UNIBUS\) {2}— complete/);
+  assert.match(text, /M7900 {2}RK06\/07 Unibus interface {2}×3/);
+  assert.match(text, /RK611 {2}\(UNIBUS\) {2}— leftover 1\/2 boards/);
+  assert.match(text, /M7900 {2}RK06\/07 Unibus interface {2}×2/);
+  assert.match(text, /M7901.*<-- MISSING/);   // fully consumed by the one complete set
+
+  // Without includeMissing, the leftover block still appears but only lists
+  // what's actually left (M7900), not the boards the complete set used up.
+  const withoutMissing = buildExport(idx, stack, { includeMissing: false, exportedAt: "t" });
+  const leftoverSection = withoutMissing.split("leftover 1/2 boards")[1];
+  assert.doesNotMatch(leftoverSection, /M7901/);
 });
 
 test("systemHints: mines model references from descriptions", () => {
