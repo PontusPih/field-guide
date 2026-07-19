@@ -132,9 +132,27 @@ spending cap/kill-switch), not pay-per-use exposure.
 - [ ] Structured logging — mind the no-retention stance below, don't log image content
 - [ ] Config via environment variables (port, rate limits, allowed origins), not
       hardcoded constants
+- [ ] Pre-flight ping before `POST /ocr`, driving `statusEl` through distinct stages
+      the user can actually tell apart: "waking up server…" (pre-flight in flight —
+      catches sleep-tier cold start, e.g. Render free tier's ~30-60s spin-up),
+      "queued…" (waiting on the bounded queue once that lands), "processing image…"
+      (the real OCR call). A cheap `GET /` works as the pre-flight signal because
+      `server.py` loads the RapidOCR models before the HTTP server starts listening,
+      so any successful response already implies models are warm. Only relevant if
+      hosting ends up on a sleep-tier PaaS — moot under self-hosting.
 
 **Deployment**
 - [ ] Docker image
+- [ ] Optimize image size before going live — already swapped `opencv-python` for
+      `opencv-python-headless` (drops Qt5/X11 GUI libs); further trimming possible
+      (e.g. FFmpeg/AVIF/JPEG2000 codec support opencv bundles but this app never uses,
+      since it only ever decodes one uploaded still image per request).
+      Verified (built+ran a container without them): the Dockerfile's `apt-get install
+      libgl1 libglib2.0-0` is currently dead weight — the pinned
+      `opencv-python-headless==5.0.0.93` doesn't link against either (confirmed via
+      `ldd`, a string scan for `dlopen`, and a real end-to-end OCR run with neither
+      package installed). Older headless-opencv releases had a packaging bug that
+      needed them; this pin doesn't. Safe to drop both apt-get lines.
 - [ ] Pick a hosting provider — must hold to the $0 budget: a free tier, self-hosting on
       existing hardware, or a provider with a hard spending cap/kill-switch. Pay-per-use
       serverless is a poor fit here unless it has an enforced hard cap, since an abuse
@@ -143,8 +161,14 @@ spending cap/kill-switch), not pay-per-use exposure.
 
 **Security & cost control** — free, unauthenticated, public-facing service
 - [ ] Per-IP rate limiting / throttling
-- [ ] Bounded concurrency — a queue/semaphore in front of the RapidOCR engine so
-      unbounded parallel requests can't spike CPU/memory
+- [ ] Bounded concurrency — a semaphore in front of the RapidOCR engine so unbounded
+      parallel requests can't spike CPU/memory (`server.py`'s `ThreadingHTTPServer`
+      currently spawns one thread per connection with no limit). Pair with a **queue
+      with a depth cap**: once the cap is hit, reject immediately (e.g. 429) rather
+      than let requests pile up — a request that finally gets processed far later is
+      likely for a client that's already given up, so accepting it just wastes
+      compute for no one. Sizing (concurrency N, queue depth K) needs real numbers
+      once a host's actual CPU/RAM allotment and per-request OCR time are known.
 - [ ] Upload size limit — reject well before ~10-20MB, checked on both sides: client
       refuses to send an oversized file (saves the round trip), server hard-rejects
       regardless (the client check is a courtesy, not the actual defense)

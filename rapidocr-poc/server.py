@@ -41,6 +41,14 @@ class Handler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=str(STATIC_DIR), **kwargs)
 
     def do_GET(self):
+        if self.path == "/healthz":
+            body = b"ok"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path == "/":
             self.path = "/poc.html"
         super().do_GET()
@@ -71,8 +79,8 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main():
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    print(f"RapidOCR POC server on http://127.0.0.1:{PORT}")
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    print(f"RapidOCR POC server on http://0.0.0.0:{PORT}")
     server.serve_forever()
 
 
