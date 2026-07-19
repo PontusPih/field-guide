@@ -125,13 +125,31 @@ spending cap/kill-switch), not pay-per-use exposure.
       section of `index.html`?
 - [ ] Export / "send to lookup" step: populate the Phase-1 input textarea (or reuse
       `core.js`'s export format) from the curated, verified label list
+- [ ] Same-origin problem, currently masked: `poc.js`'s `fetch("/ocr")` is relative,
+      which only works because the POC's Render deploy serves both the static frontend
+      and `/ocr` from one origin. Once the OCR UI moves into the main app (which stays
+      on GitHub Pages per the architecture above), frontend and backend split origins —
+      needs either an absolute backend URL + CORS, or routing so it stays same-origin
+      (e.g. `field-guide.pdp8.se/ocr` proxied through to the backend).
 
 **Refactor for production**
 - [ ] Review `rapidocr-poc/server.py`, `poc.js`, `geometry.js` with shipping in mind — the
       prototype optimized for iterating fast, not for running unattended
-- [ ] Structured logging — mind the no-retention stance below, don't log image content
+- [ ] Structured logging — mind the no-retention stance below, don't log image content.
+      A first step exists: `run_ocr()` logs upload size + peak RSS before/after each
+      request (`resource.getrusage`), which is what surfaced the memory-ceiling finding
+      under Deployment. Not structured (plain `print`), and worth keeping even after a
+      real logging setup lands, since it's cheap and diagnostic.
+- [ ] Flask/FastAPI concurrency model — flagged earlier as worth a closer look
+      (sync/WSGI vs. async/ASGI) but never actually discussed before the thread moved
+      on to `server.py`'s own `ThreadingHTTPServer` concurrency instead. Still open if
+      a framework migration is ever considered.
 - [ ] Config via environment variables (port, rate limits, allowed origins), not
-      hardcoded constants
+      hardcoded constants. Port done (`server.py` reads `$PORT`, defaults to 8642
+      locally); rate limits and allowed origins still hardcoded/absent.
+- [x] `GET /healthz` — added for Render's health check, returns 200 with no OCR work
+      (models are already loaded by the time the process can accept any connection at
+      all, since `engine = RapidOCR()` runs before the HTTP server starts listening).
 - [ ] Pre-flight ping before `POST /ocr`, driving `statusEl` through distinct stages
       the user can actually tell apart: "waking up server…" (pre-flight in flight —
       catches sleep-tier cold start, e.g. Render free tier's ~30-60s spin-up),
@@ -140,9 +158,22 @@ spending cap/kill-switch), not pay-per-use exposure.
       `server.py` loads the RapidOCR models before the HTTP server starts listening,
       so any successful response already implies models are warm. Only relevant if
       hosting ends up on a sleep-tier PaaS — moot under self-hosting.
+- [ ] Revisit the `rapidocr-onnxruntime==1.4.4` pin later. That package line has been
+      unmaintained since Jan 2025 — the project consolidated into a unified `rapidocr`
+      package (multi-backend, at 3.9.1 as of Jul 2026) that superseded it. Not migrating
+      now: verified memory profiling (peak RSS ~545MB per request, dominated by pipeline
+      buffer copies at RapidOCR's own ~2000px working resolution, not by original image
+      size — see the memory-ceiling finding under Deployment) is unlikely to improve
+      much from a backend swap alone, and the 2.x/3.x line looks like a real rewrite
+      (yanked releases for missing deps / a broken PyTorch engine), not a drop-in bump —
+      would need the full accuracy + memory verification redone.
 
 **Deployment**
-- [ ] Docker image
+- [x] Docker image — built, passes the regression suite inside the container, and has
+      deployed successfully to Render (confirmed end-to-end: real photo in, correct
+      `M8295` detection out). Render performs the actual `docker build` itself
+      server-side on every deploy from the repo's Dockerfile — no local build/push step
+      needed on our end.
 - [ ] Optimize image size before going live — already swapped `opencv-python` for
       `opencv-python-headless` (drops Qt5/X11 GUI libs); further trimming possible
       (e.g. FFmpeg/AVIF/JPEG2000 codec support opencv bundles but this app never uses,
@@ -157,6 +188,24 @@ spending cap/kill-switch), not pay-per-use exposure.
       existing hardware, or a provider with a hard spending cap/kill-switch. Pay-per-use
       serverless is a poor fit here unless it has an enforced hard cap, since an abuse
       spike would otherwise translate directly into cost.
+      **Render free tier (512MB) confirmed too small for real use** — a live deploy
+      OOM'd on a single normal-sized upload. Measured why: a single OCR request peaks
+      at ~442-545MB RSS *regardless* of source image resolution (tested 2400x1800 and
+      a synthetic 12MP image — both landed around the same ~545MB ceiling), because
+      RapidOCR resizes internally to its own ~2000px working resolution before the
+      expensive det/cls/rec work runs either way. Pre-resizing the upload to match
+      doesn't lower the ceiling (only moves when the cost is paid); resizing low enough
+      to actually cut memory (~1600px and below) drops real detections, including
+      `M8295` from the regression fixture. Fixed onnxruntime thread counts (vs. the
+      config's default -1) had no measurable effect either. Conclusion: this is an
+      inherent pipeline cost, not a tuning problem — needs a host with real headroom.
+      Oracle Cloud's Always-Free VM (Ampere, 24GB RAM) is the leading candidate on
+      that basis; not yet decided/committed.
+- [ ] Unexplained: peak RSS climbed further (615MB -> 803MB) across two *identical*
+      back-to-back requests in a local test, not just holding steady at the
+      single-request ceiling. Possibly onnxruntime/opencv allocator not releasing
+      memory between calls. Worth investigating before committing to a memory-tight
+      host, separately from the per-request ceiling above.
 - [ ] TLS termination + routing (own subdomain vs. a path under field-guide.pdp8.se)
 
 **Security & cost control** — free, unauthenticated, public-facing service

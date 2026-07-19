@@ -6,13 +6,15 @@ runs the full RapidOCR detection+recognition pipeline on an uploaded image
 and returns the found boxes as JSON.
 """
 import json
+import os
+import resource
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from rapidocr_onnxruntime import RapidOCR
 
 STATIC_DIR = Path(__file__).resolve().parent
-PORT = 8642
+PORT = int(os.environ.get("PORT", 8642))
 
 engine = RapidOCR()
 
@@ -23,7 +25,13 @@ def run_ocr(image_bytes):
     Returns a JSON-serializable list of {box, text, score}, ordered as
     RapidOCR found them. Empty list if no text was detected.
     """
+    mem_before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     result, _elapse = engine(image_bytes)
+    mem_after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    print(
+        f"OCR: {len(image_bytes)} bytes in, peak RSS "
+        f"{mem_before / 1024:.0f}MB -> {mem_after / 1024:.0f}MB"
+    )
     if result is None:
         return []
     return [

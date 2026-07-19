@@ -67,6 +67,12 @@ class HttpEndpointTests(unittest.TestCase):
         cls.server.shutdown()
         cls.thread.join()
 
+    def test_get_healthz_returns_ok(self):
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/healthz")
+        with urllib.request.urlopen(req) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertEqual(resp.read(), b"ok")
+
     def test_post_ocr_returns_expected_json(self):
         req = urllib.request.Request(
             f"http://127.0.0.1:{self.port}/ocr",
