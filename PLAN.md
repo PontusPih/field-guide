@@ -121,16 +121,26 @@ spending cap/kill-switch), not pay-per-use exposure.
       coordinates within that image it came from
 
 **Integration**
-- [ ] Decide where this lives in the shipped app — replace `ocr-poc.html`? a new page? a
-      section of `index.html`?
-- [ ] Export / "send to lookup" step: populate the Phase-1 input textarea (or reuse
-      `core.js`'s export format) from the curated, verified label list
-- [ ] Same-origin problem, currently masked: `poc.js`'s `fetch("/ocr")` is relative,
-      which only works because the POC's Render deploy serves both the static frontend
-      and `/ocr` from one origin. Once the OCR UI moves into the main app (which stays
-      on GitHub Pages per the architecture above), frontend and backend split origins —
-      needs either an absolute backend URL + CORS, or routing so it stays same-origin
-      (e.g. `field-guide.pdp8.se/ocr` proxied through to the backend).
+- [x] Decide where this lives in the shipped app — `index.html` is now a landing page
+      with two boxes (Scan / Identify) and an arrow showing the workflow direction;
+      the old `index.html`/`app.js` identify tool moved to `guide.html`/`guide.js`
+      unchanged, and a new `ocr.html`/`ocr.js` (adapted from `rapidocr-poc/poc.html`/
+      `poc.js`, reusing `rapidocr-poc/geometry.js` rather than duplicating it) is the
+      shipped scan tool. `rapidocr-poc/` itself is untouched — still the dev/prototype
+      environment for the Python backend. The older Tesseract-based `ocr-poc.html`/
+      `ocr-poc.js` are superseded but left in place, not deleted.
+- [x] Export / "send to lookup" step — `ocr.html` has a "Go to identification →"
+      button (enabled once at least one box is recognized). It collects every
+      detection with non-null text, dedupes case-insensitively, and hands the list to
+      `guide.js` via `sessionStorage` (key `fieldGuideScan`, consumed once on load,
+      replacing the sample textarea value). No server round-trip needed for the
+      handoff since both pages are static/client-side.
+- [x] Same-origin problem — `ocr.js` now points at a `BACKEND_URL` constant
+      (currently `http://localhost:8642`, needs updating once real hosting is
+      picked) instead of a relative `/ocr`. `rapidocr-poc/server.py` sends
+      `Access-Control-Allow-Origin: *` (plus an `OPTIONS` preflight handler) on
+      `/ocr` responses so the cross-origin fetch works; `poc.html`/`poc.js`'s
+      same-origin requests are unaffected by the added headers.
 
 **Refactor for production**
 - [ ] Review `rapidocr-poc/server.py`, `poc.js`, `geometry.js` with shipping in mind — the
