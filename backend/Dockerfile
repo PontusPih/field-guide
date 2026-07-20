@@ -1,5 +1,12 @@
 FROM python:3.12-slim
 
+# Python block-buffers stdout when it isn't a tty -- true here, since Render
+# captures the container's output through a pipe. Without this, print()
+# output (including the version line and per-request RSS logging in
+# server.py) can sit unflushed and never reach Render's logs, and is lost
+# outright if the process is later SIGKILLed (e.g. an OOM kill).
+ENV PYTHONUNBUFFERED=1
+
 # opencv-python-headless still needs libGL/libglib present on the system even
 # though it never opens a window (RapidOCR's cv2 calls dlopen it internally).
 RUN apt-get update && apt-get install -y --no-install-recommends \
