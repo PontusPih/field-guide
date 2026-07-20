@@ -20,5 +20,13 @@ RUN pip install --no-cache-dir -r requirements.txt \
 
 COPY server.py ./
 
+# Render sets RENDER_GIT_COMMIT itself at runtime (no build-arg needed there).
+# This build-arg covers everyone else: `docker build --build-arg
+# GIT_COMMIT=$(git rev-parse --short HEAD) ...` so a manually built image is
+# self-describing too. Placed after the dependency layers above so a
+# changing commit id doesn't bust their build cache.
+ARG GIT_COMMIT=unknown
+ENV GIT_COMMIT=$GIT_COMMIT
+
 EXPOSE 8642
 CMD ["python", "server.py"]

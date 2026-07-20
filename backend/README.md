@@ -25,9 +25,13 @@ No local Python needed at all; the image builds RapidOCR and its
 dependencies inside the container.
 
 ```
-docker build -t field-guide-ocr .
+docker build --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) -t field-guide-ocr .
 docker run -p 8642:8642 field-guide-ocr
 ```
+
+`--build-arg` is optional — omit it and the image just logs `unknown` for the
+commit. Render builds this Dockerfile itself and doesn't use this arg; it
+sets `RENDER_GIT_COMMIT` directly instead (see `server.py`).
 
 ## Option 2 — Python venv (recommended for development)
 

@@ -25,11 +25,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from rapidocr_onnxruntime import RapidOCR
 
 VERSION = "0.1.0"
-# Render sets this automatically (build time and runtime) from the connected
-# repo's HEAD; nothing to plumb through the Dockerfile. Off Render (local
-# runs, other hosts) there's no .git in the image to fall back on, so this
-# just reads "unknown".
-COMMIT_SHA = os.environ.get("RENDER_GIT_COMMIT", "unknown")[:7]
+# Render sets RENDER_GIT_COMMIT itself (build time and runtime), no Dockerfile
+# involvement. GIT_COMMIT is the Dockerfile's own build-arg, for images built
+# outside Render (see Dockerfile). Neither exists for a bare `python
+# server.py` outside Docker, hence the final "unknown".
+COMMIT_SHA = os.environ.get("RENDER_GIT_COMMIT", os.environ.get("GIT_COMMIT", "unknown"))[:7]
 
 PORT = int(os.environ.get("PORT", 8642))
 NUM_WORKERS = int(os.environ.get("OCR_WORKERS", 1))
