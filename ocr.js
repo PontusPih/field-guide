@@ -45,10 +45,10 @@ const statusEl = document.getElementById("status");
 const resultsEl = document.getElementById("results");
 
 // The OCR backend only runs in Python (can't stay client-side like the rest
-// of the app), so it's a separate origin from this static page. No
-// production host is picked yet (see PLAN.md, Phase 2b) — point this at a
-// local backend/server.py for now and update it once hosting lands.
-const BACKEND_URL = "http://localhost:8642";
+// of the app), so it's a separate origin from this static page. Hosted on
+// Render (see PLAN.md, Phase 2b); backend/server.py sends the CORS headers
+// this cross-origin fetch needs.
+const BACKEND_URL = "https://field-guide.onrender.com";
 
 // Key guide.js reads on boot to pre-fill its input instead of the sample text.
 const SCAN_HANDOFF_KEY = "fieldGuideScan";

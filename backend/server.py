@@ -24,6 +24,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from rapidocr_onnxruntime import RapidOCR
 
+VERSION = "0.1.0"
+# Render sets this automatically (build time and runtime) from the connected
+# repo's HEAD; nothing to plumb through the Dockerfile. Off Render (local
+# runs, other hosts) there's no .git in the image to fall back on, so this
+# just reads "unknown".
+COMMIT_SHA = os.environ.get("RENDER_GIT_COMMIT", "unknown")[:7]
+
 PORT = int(os.environ.get("PORT", 8642))
 NUM_WORKERS = int(os.environ.get("OCR_WORKERS", 1))
 OCR_QUEUE_MAXSIZE = int(os.environ.get("OCR_QUEUE_MAXSIZE", 2))
@@ -174,7 +181,10 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     start_workers(NUM_WORKERS)
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-    print(f"OCR backend on http://0.0.0.0:{PORT} ({NUM_WORKERS} OCR worker(s))")
+    print(
+        f"OCR backend v{VERSION} ({COMMIT_SHA}) on http://0.0.0.0:{PORT} "
+        f"({NUM_WORKERS} OCR worker(s))"
+    )
     server.serve_forever()
 
 

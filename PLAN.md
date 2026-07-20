@@ -167,8 +167,8 @@ spending cap/kill-switch), not pay-per-use exposure.
       replacing the sample textarea value). No server round-trip needed for the
       handoff since both pages are static/client-side.
 - [x] Same-origin problem — `ocr.js` now points at a `BACKEND_URL` constant
-      (currently `http://localhost:8642`, needs updating once real hosting is
-      picked) instead of a relative `/ocr`. `backend/server.py` sends
+      (`https://field-guide.onrender.com`) instead of a relative `/ocr`.
+      `backend/server.py` sends
       `Access-Control-Allow-Origin: *` (plus an `OPTIONS` preflight handler) on
       `/ocr` responses so the cross-origin fetch works. The backend no longer
       serves any frontend at all (see Refactor bullet below), so same-origin

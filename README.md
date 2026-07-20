@@ -26,9 +26,9 @@ like the rest of the app. See [`backend/README.md`](backend/README.md) for
 three ways to run it locally (Docker, a venv, or a plain global
 `pip install`) — pick whichever fits.
 
-`ocr.js`'s `BACKEND_URL` constant must point at wherever the backend ends up
-running (`http://localhost:8642` by default; production hosting isn't
-decided yet — see `PLAN.md`, Phase 2b).
+`ocr.js`'s `BACKEND_URL` constant points at the production backend
+(`https://field-guide.onrender.com`); point it at `http://localhost:8642`
+instead when running the backend locally — see `PLAN.md`, Phase 2b.
 
 ## Tests
 
