@@ -35,6 +35,11 @@ browser console: `localStorage.setItem("fieldGuideBackendUrl", "https://...")`
 — clear it with `localStorage.removeItem("fieldGuideBackendUrl")` to go back
 to auto-detection.
 
+Running locally also relaxes Render's 512MB-tier-driven limits automatically
+on the frontend side (no tiling — one request per scan instead of ~736px
+pieces); start the backend with `OCR_MAX_DIMENSION=0` too so it doesn't reject
+that now-untiled request — see `backend/README.md`, "Local development".
+
 ## Tests
 
 ```

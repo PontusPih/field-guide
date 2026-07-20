@@ -15,6 +15,37 @@ Exposes:
 Listens on `:8642` by default (`$PORT` to override). `ocr.js`'s
 `BACKEND_URL` constant must point at wherever this ends up running.
 
+## Local development
+
+`ocr.js` already auto-detects a local frontend (serving from
+`localhost`/`127.0.0.1`) and switches to fast, permissive defaults on its own
+— no tiling (`TILE_SIZE = Infinity`, one request per scan instead of ~736px
+pieces) and, via `backend-config.js`, `http://localhost:8642` as the backend.
+See the root `README.md`.
+
+That untiled request can be much bigger than Render's 512MB-tier-driven 1200px
+default `OCR_MAX_DIMENSION` allows, so it'll get 413-rejected unless the
+backend is told to relax too. There's no reliable way for the backend itself
+to tell "a dev machine" from "a misconfigured deploy", so this doesn't happen
+automatically — set it explicitly when running locally, whichever option
+below you use, e.g. for the venv option:
+
+```
+OCR_MAX_DIMENSION=0 .venv/bin/python3 server.py
+```
+
+(`0`, or any non-positive value, disables the check entirely.) Leave it unset
+everywhere memory is actually constrained — the 1200px default is there on
+purpose. The three run commands below all show this flag inline.
+
+Thread counts (`OCR_INTRA_OP_THREADS`/`OCR_INTER_OP_THREADS`/`OCR_CV2_THREADS`)
+don't need a matching local override — their `-1` (auto-detect) default is
+already correct and fast for an unrestricted local run, container or not; the
+slowdown that motivated pinning these (see `PLAN.md` Benchmarks) is specific
+to a *CPU-restricted* container (e.g. `docker run --cpuset-cpus=...`) where
+auto-detect sees more cores than the container can actually use. Only pin
+them locally if you're deliberately reproducing that restriction.
+
 All three options below install the exact same pinned versions
 (`requirements.txt`), so pick whichever fits how you work — they're not
 different setups, just different ways of installing the same thing.
@@ -26,7 +57,7 @@ dependencies inside the container.
 
 ```
 docker build --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) -t field-guide-ocr .
-docker run -p 8642:8642 field-guide-ocr
+docker run -p 8642:8642 -e OCR_MAX_DIMENSION=0 field-guide-ocr
 ```
 
 `--build-arg` is optional — omit it and the image just logs `unknown` for the
@@ -42,7 +73,7 @@ matches how this project's own dev environment is set up.
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/pip install --no-deps rapidocr-onnxruntime==1.4.4
-.venv/bin/python3 server.py
+OCR_MAX_DIMENSION=0 .venv/bin/python3 server.py
 ```
 
 ## Option 3 — Global pip install
@@ -54,7 +85,7 @@ from other Python projects on the machine.
 ```
 pip install -r requirements.txt
 pip install --no-deps rapidocr-onnxruntime==1.4.4
-python3 server.py
+OCR_MAX_DIMENSION=0 python3 server.py
 ```
 
 ## Why `rapidocr-onnxruntime` is a separate install step

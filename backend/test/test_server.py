@@ -20,7 +20,8 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from rapidocr_onnxruntime import RapidOCR  # noqa: E402
 
-from server import Handler, run_ocr, start_workers  # noqa: E402
+import server  # noqa: E402
+from server import Handler, check_dimensions, run_ocr, start_workers  # noqa: E402
 
 FIELD_GUIDE_DIR = Path(__file__).resolve().parent.parent.parent
 IMG_1527 = FIELD_GUIDE_DIR / "IMG_1527.jpg"
@@ -45,6 +46,24 @@ def crop_bytes(path, box, fmt="JPEG"):
         buf = io.BytesIO()
         img.crop(box).save(buf, format=fmt)
         return buf.getvalue()
+
+
+class CheckDimensionsTests(unittest.TestCase):
+    def setUp(self):
+        self.addCleanup(setattr, server, "MAX_DIMENSION", server.MAX_DIMENSION)
+
+    def test_oversized_image_rejected_by_default(self):
+        server.MAX_DIMENSION = 1200
+        with self.assertRaises(server.ImageTooLargeError):
+            check_dimensions(IMG_1527.read_bytes())  # 2400x1800
+
+    def test_zero_disables_the_check(self):
+        server.MAX_DIMENSION = 0
+        check_dimensions(IMG_1527.read_bytes())  # would raise if the gate were still active
+
+    def test_negative_also_disables_the_check(self):
+        server.MAX_DIMENSION = -1
+        check_dimensions(IMG_1527.read_bytes())
 
 
 class RunOcrTests(unittest.TestCase):

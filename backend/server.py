@@ -46,6 +46,13 @@ OCR_QUEUE_MAXSIZE = int(os.environ.get("OCR_QUEUE_MAXSIZE", 2))
 # hard limit for arbitrary aspect ratios (a very elongated image can get
 # scaled below Det's internal 736px short-side floor by max_side_len, then
 # scaled back *up* past max_side_len by that floor, defeating it).
+# The default (1200) is sized for Render's 512MB free tier and should stay
+# the default everywhere memory is actually constrained -- it's not meant to
+# be silently relaxed just because a request happens to come from a dev
+# machine (the backend has no reliable way to tell). OCR_MAX_DIMENSION=0 (or
+# any non-positive value) disables the check entirely -- an explicit local
+# opt-out, e.g. for a dev machine with real memory headroom where ocr.js's
+# own tile size is also raised (see backend/README.md).
 MAX_DIMENSION = int(os.environ.get("OCR_MAX_DIMENSION", 1200))
 
 # -1 matches RapidOCR/onnxruntime's own "unset, auto-detect" sentinel, so
@@ -77,9 +84,12 @@ class ImageTooLargeError(Exception):
 def check_dimensions(image_bytes):
     """Raise ImageTooLargeError if either side exceeds MAX_DIMENSION.
 
-    Uses PIL's lazy header read (no pixel decode) so this stays cheap even
-    for a hostile oversized upload.
+    MAX_DIMENSION <= 0 disables the check entirely. Uses PIL's lazy header
+    read (no pixel decode) so this stays cheap even for a hostile oversized
+    upload.
     """
+    if MAX_DIMENSION <= 0:
+        return
     with Image.open(io.BytesIO(image_bytes)) as img:
         width, height = img.size
     if max(width, height) > MAX_DIMENSION:
