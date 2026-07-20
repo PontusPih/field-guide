@@ -15,6 +15,7 @@ lightweight requests are served immediately by ThreadingHTTPServer even
 while a scan is in progress, since the heavy allocation now happens only on
 the dedicated worker thread(s), never on a request thread.
 """
+import io
 import json
 import os
 import queue
@@ -22,6 +23,8 @@ import resource
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import cv2
+from PIL import Image
 from rapidocr_onnxruntime import RapidOCR
 
 VERSION = "0.1.0"
@@ -35,11 +38,54 @@ PORT = int(os.environ.get("PORT", 8642))
 NUM_WORKERS = int(os.environ.get("OCR_WORKERS", 1))
 OCR_QUEUE_MAXSIZE = int(os.environ.get("OCR_QUEUE_MAXSIZE", 2))
 
+# Hard ceiling on uploaded image dimensions, checked before any RapidOCR work
+# happens. ocr.js is expected to tile large selections into ~736px pieces
+# client-side (see PLAN.md, "Tiled scanning for large images") and this is
+# the backstop for that -- independent of whether the client's tiling logic
+# is correct, since RapidOCR's own max_side_len resize alone isn't a safe
+# hard limit for arbitrary aspect ratios (a very elongated image can get
+# scaled below Det's internal 736px short-side floor by max_side_len, then
+# scaled back *up* past max_side_len by that floor, defeating it).
+MAX_DIMENSION = int(os.environ.get("OCR_MAX_DIMENSION", 1200))
+
+# -1 matches RapidOCR/onnxruntime's own "unset, auto-detect" sentinel, so
+# these are safe to pass through unconditionally. Auto-detect is unreliable
+# in a container (os.cpu_count() sees the host's full core count, not any
+# cgroup limit), so a real deployment should pin these explicitly to match
+# the host it's actually running on.
+INTRA_OP_THREADS = int(os.environ.get("OCR_INTRA_OP_THREADS", -1))
+INTER_OP_THREADS = int(os.environ.get("OCR_INTER_OP_THREADS", -1))
+
+# OpenCV has its own internal thread pool, separate from onnxruntime's and
+# not affected by the two settings above. -1 leaves OpenCV's own default
+# (auto-detected, same container caveat as above) untouched.
+CV2_THREADS = int(os.environ.get("OCR_CV2_THREADS", -1))
+if CV2_THREADS != -1:
+    cv2.setNumThreads(CV2_THREADS)
+
 job_queue = queue.Queue(maxsize=OCR_QUEUE_MAXSIZE)
 
 
 class QueueFullError(Exception):
     pass
+
+
+class ImageTooLargeError(Exception):
+    pass
+
+
+def check_dimensions(image_bytes):
+    """Raise ImageTooLargeError if either side exceeds MAX_DIMENSION.
+
+    Uses PIL's lazy header read (no pixel decode) so this stays cheap even
+    for a hostile oversized upload.
+    """
+    with Image.open(io.BytesIO(image_bytes)) as img:
+        width, height = img.size
+    if max(width, height) > MAX_DIMENSION:
+        raise ImageTooLargeError(
+            f"image {width}x{height} exceeds the {MAX_DIMENSION}px max dimension"
+        )
 
 
 def run_ocr(engine, image_bytes):
@@ -68,7 +114,9 @@ def run_ocr(engine, image_bytes):
 
 
 def ocr_worker():
-    engine = RapidOCR()
+    engine = RapidOCR(
+        intra_op_num_threads=INTRA_OP_THREADS, inter_op_num_threads=INTER_OP_THREADS
+    )
     while True:
         image_bytes, result_queue = job_queue.get()
         try:
@@ -161,6 +209,15 @@ class Handler(BaseHTTPRequestHandler):
         image_bytes = self.rfile.read(length)
 
         try:
+            check_dimensions(image_bytes)
+        except ImageTooLargeError as e:
+            self.send_json_error(413, str(e))
+            return
+        except Exception as e:
+            self.send_json_error(400, f"could not read image: {e}")
+            return
+
+        try:
             detections = submit_ocr(image_bytes)
         except QueueFullError as e:
             self.send_json_error(503, str(e), retry_after=5)
@@ -183,7 +240,9 @@ def main():
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print(
         f"OCR backend v{VERSION} ({COMMIT_SHA}) on http://0.0.0.0:{PORT} "
-        f"({NUM_WORKERS} OCR worker(s))"
+        f"({NUM_WORKERS} OCR worker(s), max_dimension={MAX_DIMENSION}px, "
+        f"intra_op={INTRA_OP_THREADS}, inter_op={INTER_OP_THREADS}, "
+        f"cv2_threads={CV2_THREADS})"
     )
     server.serve_forever()
 

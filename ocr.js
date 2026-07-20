@@ -26,8 +26,9 @@
 
 import {
   toSource, toDisplay, hitTestBoxes, distance, nearestWithinRadius, pointInPolygon,
-  boundsOf, overlapArea,
+  boundsOf, overlapArea, tileGrid, selectNonOverlapping,
 } from "./geometry.js";
+import { resolveBackendUrl, BACKEND_URL_STORAGE_KEY } from "./backend-config.js";
 
 const fileInput = document.getElementById("file");
 const display = document.getElementById("stage");
@@ -47,8 +48,15 @@ const resultsEl = document.getElementById("results");
 // The OCR backend only runs in Python (can't stay client-side like the rest
 // of the app), so it's a separate origin from this static page. Hosted on
 // Render (see PLAN.md, Phase 2b); backend/server.py sends the CORS headers
-// this cross-origin fetch needs.
-const BACKEND_URL = "https://field-guide.onrender.com";
+// this cross-origin fetch needs. Which URL that actually is -- local
+// backend during development, production otherwise, or an explicit
+// override -- is resolved by backend-config.js; see there for how to point
+// this at something else (e.g. a staging deploy).
+const BACKEND_URL = resolveBackendUrl({
+  hostname: location.hostname,
+  storedOverride: localStorage.getItem(BACKEND_URL_STORAGE_KEY),
+});
+console.log(`OCR backend: ${BACKEND_URL}`);
 
 // Key guide.js reads on boot to pre-fill its input instead of the sample text.
 const SCAN_HANDOFF_KEY = "fieldGuideScan";
@@ -69,6 +77,26 @@ const RESIZE_HANDLE_HIT_RADIUS = 12; // display px, how close a click must land 
 // resolution as scanning the full image, no small-crop boost.
 const RAPIDOCR_UPSCALE_SHORT_SIDE = 736;
 
+// Tiling config for large regions (PLAN.md, "Tiled scanning for large
+// images"). TILE_SIZE defaults to RAPIDOCR_UPSCALE_SHORT_SIDE since that's
+// the size det never scales -- going smaller wastes nothing extra (det
+// upscales back up to the floor regardless) but doesn't help either, and
+// benchmarking a larger tile came out strictly worse on both memory *and*
+// wall time (see PLAN.md Benchmarks), not a trade-off. These are the knobs
+// to raise if this ever runs on a host with real memory headroom instead of
+// Render's 512MB free tier -- kept separate from RAPIDOCR_UPSCALE_SHORT_SIDE
+// (today numerically identical) since one describes the backend's fixed
+// floor and the other is this client's own tunable choice.
+const TILE_SIZE = 736;
+const TILE_OVERLAP_FRAC = 0.15;
+// A region only modestly larger than one tile must not be forced into a
+// multi-tile grid -- the overlap needed to avoid missing text at the seam
+// approaches 90%+ at that size (a 800x800 region against a 736 tile), which
+// multiplies request count for no benefit. Must stay comfortably under the
+// backend's own OCR_MAX_DIMENSION gate (default 1200px = 736 * 1.63) or a
+// legitimately single-tile region could get 413-rejected.
+const TILE_SINGLE_CELL_FACTOR = 1.4;
+
 let img = null; // loaded HTMLImageElement, full source resolution
 let fileName = ""; // original filename of the loaded image, shown in the info line
 let rotation = 0; // 0 | 90 | 180 | 270, clockwise
@@ -78,6 +106,9 @@ let minScale = 1;
 
 let detections = []; // [{ id, box: [[x,y]x4] in source coords, text, score }]
 let nextId = 1;
+// [{ box: [x0,y0,x1,y1], done }] in source coords, shown while a multi-tile
+// scan is in flight (see recognizeTiled) -- empty otherwise.
+let tileOverlay = [];
 let selectedId = null;
 let draftBox = null; // { x0, y0, x1, y1 } in source coords, while drawing a new box
 
@@ -434,6 +465,22 @@ function drawDeleteHotspot() {
   }
 }
 
+// Tile grid for an in-flight multi-tile scan (see recognizeTiled) — dashed
+// while a tile is still queued/in-flight, solid once its result is back.
+// Deliberately a plain outline (no label/color-by-confidence) so it reads
+// as a different kind of thing from the detection boxes drawn over it.
+function drawTileOverlay() {
+  for (const t of tileOverlay) {
+    const p0 = toDisplay({ x: t.box[0], y: t.box[1] }, view);
+    const p1 = toDisplay({ x: t.box[2], y: t.box[3] }, view);
+    ctx.setLineDash(t.done ? [] : [5, 4]);
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = "rgba(0, 188, 212, 0.85)";
+    ctx.strokeRect(p0.x, p0.y, p1.x - p0.x, p1.y - p0.y);
+  }
+  ctx.setLineDash([]);
+}
+
 // Split from redraw() so hover-only updates (canvas hover, or hovering a row
 // in the results list) can repaint the canvas without rebuilding the whole
 // list DOM underneath the cursor — which would flicker/misfire hover events
@@ -451,6 +498,7 @@ function redrawCanvas() {
   const visH = Math.min(full.height, display.height / view.scale);
   ctx.drawImage(full, view.x, view.y, visW, visH, view.offsetX, view.offsetY, visW * view.scale, visH * view.scale);
 
+  if (tileOverlay.length > 0) drawTileOverlay();
   detections.forEach((d, i) => drawDetection(d, i));
 
   if (draftBox) {
@@ -513,15 +561,8 @@ function removeDetections(idsToRemove) {
 }
 
 function pruneOverlapping() {
-  const sorted = [...detections].sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
-  const kept = [];
-  const removedIds = new Set();
-  for (const d of sorted) {
-    const dBounds = boundsOf(d.box);
-    const overlapsKept = kept.some((k) => overlapArea(dBounds, boundsOf(k.box)) > 0);
-    if (overlapsKept) removedIds.add(d.id);
-    else kept.push(d);
-  }
+  const keptIds = new Set(selectNonOverlapping(detections).map((d) => d.id));
+  const removedIds = new Set(detections.filter((d) => !keptIds.has(d.id)).map((d) => d.id));
   return removeDetections(removedIds);
 }
 
@@ -802,22 +843,98 @@ function rotate(delta) {
 rotateLeftBtn.addEventListener("click", () => rotate(-90));
 rotateRightBtn.addEventListener("click", () => rotate(90));
 
+// Crops one tile from `full` at (x0,y0) (region-local origin) sized
+// (tx0,ty0)-(tx1,ty1) and posts it to /ocr, returning results translated
+// into full-image coordinates. Shared by every caller of recognizeTiled.
+async function recognizeTile(x0, y0, [tx0, ty0, tx1, ty1]) {
+  const tw = tx1 - tx0;
+  const th = ty1 - ty0;
+  const cropCanvas = document.createElement("canvas");
+  cropCanvas.width = tw;
+  cropCanvas.height = th;
+  cropCanvas.getContext("2d").drawImage(full, x0 + tx0, y0 + ty0, tw, th, 0, 0, tw, th);
+  const blob = await new Promise((resolve) => cropCanvas.toBlob(resolve, "image/png"));
+
+  const resp = await fetch(`${BACKEND_URL}/ocr`, { method: "POST", body: blob });
+  const found = resp.ok ? await resp.json() : [];
+  // f.box is in tile-local coordinates; translate back to full-image space.
+  return found.map((f) => ({
+    box: f.box.map(([x, y]) => [x + x0 + tx0, y + y0 + ty0]),
+    text: f.text,
+    score: f.score,
+  }));
+}
+
+// Runs the (x0,y0)-(x0+w,y0+h) region of `full` through OCR, auto-tiling
+// into RapidOCR-sized pieces if the region is large (see PLAN.md, "Tiled
+// scanning for large images") and deduping tile-boundary duplicates.
+// Shared by the whole-photo "Run OCR" button and per-drawn-box recognition
+// below -- every /ocr upload goes through here, which is also what keeps
+// every upload under the backend's hard size limit (OCR_MAX_DIMENSION):
+// posting `full` directly (the pre-tiling behavior) would exceed it for any
+// realistically-sized photo. `onProgress(done, total)`, if given, fires
+// after each tile completes -- a multi-tile scan is sequential (see below)
+// and each tile takes real time, so callers with many tiles (the
+// whole-photo button especially) can show "tile N/X" instead of leaving the
+// status line static for several seconds.
+async function recognizeTiled(x0, y0, w, h, onProgress) {
+  if (w <= 0 || h <= 0) return [];
+
+  const tiles = tileGrid(w, h, TILE_SIZE, {
+    overlapFrac: TILE_OVERLAP_FRAC,
+    singleCellFactor: TILE_SINGLE_CELL_FACTOR,
+  });
+  // Only worth drawing when there's an actual grid to see -- a single-tile
+  // region matches its own bounds exactly, nothing to visualize.
+  const showOverlay = tiles.length > 1;
+
+  if (showOverlay) {
+    tileOverlay = tiles.map(([tx0, ty0, tx1, ty1]) => ({
+      box: [x0 + tx0, y0 + ty0, x0 + tx1, y0 + ty1],
+      done: false,
+    }));
+    redrawCanvas();
+  }
+
+  // Sequential, not Promise.all across tiles: a large region can produce
+  // many tiles, and the backend's job queue is bounded (OCR_QUEUE_MAXSIZE)
+  // -- firing them all at once would just 503 most of them instead of
+  // letting the single worker queue work through them.
+  let allFound = [];
+  try {
+    for (let i = 0; i < tiles.length; i++) {
+      allFound = allFound.concat(await recognizeTile(x0, y0, tiles[i]));
+      if (showOverlay) {
+        tileOverlay[i].done = true;
+        redrawCanvas();
+      }
+      if (onProgress) onProgress(i + 1, tiles.length);
+    }
+  } finally {
+    // Clear even on failure -- an error partway through a scan shouldn't
+    // leave a stale tile grid drawn over the photo indefinitely.
+    if (showOverlay) {
+      tileOverlay = [];
+      redrawCanvas();
+    }
+  }
+
+  // Overlapping tiles often detect the same complete box twice; a region
+  // that wasn't split has nothing to dedupe against itself.
+  return tiles.length > 1 ? selectNonOverlapping(allFound) : allFound;
+}
+
 runOcrBtn.addEventListener("click", async () => {
   if (!full) return;
   setStatusMessage("Running OCR…");
   runOcrBtn.disabled = true;
   try {
-    // PNG, not JPEG: avoids re-compressing an already-JPEG-decoded image a
-    // second time before it reaches the OCR backend.
-    const blob = await new Promise((resolve) => full.toBlob(resolve, "image/png"));
-    const resp = await fetch(`${BACKEND_URL}/ocr`, { method: "POST", body: blob });
-    if (!resp.ok) throw new Error(`server returned ${resp.status}`);
-    const found = await resp.json();
+    const found = await recognizeTiled(0, 0, full.width, full.height, (done, total) => {
+      if (total > 1) setStatusMessage(`Scanning tile ${done}/${total}…`);
+    });
     // Only the auto-detected layer gets refreshed — boxes you drew or
     // recognized by hand (source "manual") survive a re-scan.
-    const autoDetections = found.map((d) => (
-      { id: nextId++, box: d.box, text: d.text, score: d.score, source: "auto" }
-    ));
+    const autoDetections = found.map((d) => ({ id: nextId++, ...d, source: "auto" }));
     const manualDetections = detections.filter((d) => d.source === "manual");
     detections = [...manualDetections, ...autoDetections];
     selectedId = null;
@@ -842,9 +959,8 @@ function marginFor(bounds) {
 
 // A drawn box is really just "a region to scan" — it may hold one label
 // (the common case) or several (a looser region covering a cluttered/tiny-
-// label area). Either way: crop it, send the crop through the same /ocr
-// full detect+recognize pipeline, and keep every result found — not just
-// the best-scoring one — translated back into full-image coordinates.
+// label area). Crop it (with a small margin, letting the detector find the
+// tight text region itself) and run it through recognizeTiled.
 async function recognizeRegion(placeholder) {
   const bounds = boundsOf(placeholder.box);
   const margin = marginFor(bounds);
@@ -856,24 +972,8 @@ async function recognizeRegion(placeholder) {
   const h = y1 - y0;
   const gotUpscaleBoost = Math.min(w, h) < RAPIDOCR_UPSCALE_SHORT_SIDE;
 
-  if (w <= 0 || h <= 0) return { placeholder, found: [], gotUpscaleBoost };
-
-  const cropCanvas = document.createElement("canvas");
-  cropCanvas.width = w;
-  cropCanvas.height = h;
-  cropCanvas.getContext("2d").drawImage(full, x0, y0, w, h, 0, 0, w, h);
-  const blob = await new Promise((resolve) => cropCanvas.toBlob(resolve, "image/png"));
-
-  const resp = await fetch(`${BACKEND_URL}/ocr`, { method: "POST", body: blob });
-  const found = resp.ok ? await resp.json() : [];
-  // f.box is in crop-local coordinates; translate back to full-image space.
-  const newDetections = found.map((f) => ({
-    id: nextId++,
-    box: f.box.map(([x, y]) => [x + x0, y + y0]),
-    text: f.text,
-    score: f.score,
-    source: "manual",
-  }));
+  const found = await recognizeTiled(x0, y0, w, h);
+  const newDetections = found.map((d) => ({ id: nextId++, ...d, source: "manual" }));
   return { placeholder, found: newDetections, gotUpscaleBoost };
 }
 

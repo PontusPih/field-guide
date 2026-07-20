@@ -26,9 +26,14 @@ like the rest of the app. See [`backend/README.md`](backend/README.md) for
 three ways to run it locally (Docker, a venv, or a plain global
 `pip install`) — pick whichever fits.
 
-`ocr.js`'s `BACKEND_URL` constant points at the production backend
-(`https://field-guide.onrender.com`); point it at `http://localhost:8642`
-instead when running the backend locally — see `PLAN.md`, Phase 2b.
+`ocr.js` picks its backend automatically (see `backend-config.js`): serving the
+frontend from `localhost`/`127.0.0.1` (as above) talks to
+`http://localhost:8642` with no configuration needed; anything else (the real
+GitHub Pages host) talks to production. To point at something else instead
+(a staging deploy, someone else's local instance), set an override from the
+browser console: `localStorage.setItem("fieldGuideBackendUrl", "https://...")`
+— clear it with `localStorage.removeItem("fieldGuideBackendUrl")` to go back
+to auto-detection.
 
 ## Tests
 

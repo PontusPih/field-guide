@@ -87,7 +87,63 @@ function nearestWithinRadius(point, candidates, radius) {
   return bestIndex;
 }
 
+// Start positions covering [0, total) with cells of size `tile`, used to
+// split one axis of a large OCR region into RapidOCR-sized pieces (see
+// PLAN.md, "Tiled scanning for large images").
+//
+// If `total` already fits within `tile * singleCellFactor`, returns one
+// cell spanning the whole axis instead of splitting -- a region only
+// modestly larger than one tile would otherwise need ~90%+ overlap between
+// two cells to avoid missing text at the seam, which costs far more than it
+// saves. Otherwise, cells step by `tile * (1 - overlapFrac)` and the last
+// cell is snapped to end exactly at `total`, so no axis ever produces a
+// sliver smaller than `tile` -- the (possibly larger, on the final step)
+// overlap absorbs the remainder instead.
+function axisTiles(total, tile, { overlapFrac = 0.15, singleCellFactor = 1.4 } = {}) {
+  if (total <= tile * singleCellFactor) {
+    return [{ start: 0, length: total }];
+  }
+  const step = Math.max(1, Math.floor(tile * (1 - overlapFrac)));
+  const starts = [];
+  for (let s = 0; s <= total - tile; s += step) starts.push(s);
+  if (starts[starts.length - 1] !== total - tile) starts.push(total - tile);
+  return starts.map((start) => ({ start, length: tile }));
+}
+
+// Full 2D tile grid over a width x height region, each tile as
+// [x0, y0, x1, y1] in the region's own local coordinates. Rows and columns
+// are computed independently via axisTiles, so elongated regions (very wide
+// or very tall) naturally get an asymmetric grid without special-casing.
+function tileGrid(width, height, tile, opts = {}) {
+  const xs = axisTiles(width, tile, opts);
+  const ys = axisTiles(height, tile, opts);
+  const boxes = [];
+  for (const y of ys) {
+    for (const x of xs) {
+      boxes.push([x.start, y.start, x.start + x.length, y.start + y.length]);
+    }
+  }
+  return boxes;
+}
+
+// Greedy highest-score-first selection: keep an item unless its box's
+// bounds overlap one already kept. `items` is any array of `{box, score}`
+// (score may be null/undefined, ranked lowest). Used both for ocr.js's
+// manual "prune overlapping" button (across every detection) and to dedupe
+// one tiled region's own results before merging them in -- overlapping
+// tiles often detect the exact same complete box twice.
+function selectNonOverlapping(items) {
+  const sorted = [...items].sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
+  const kept = [];
+  for (const item of sorted) {
+    const bounds = boundsOf(item.box);
+    const overlapsKept = kept.some((k) => overlapArea(bounds, boundsOf(k.box)) > 0);
+    if (!overlapsKept) kept.push(item);
+  }
+  return kept;
+}
+
 export {
   toSource, toDisplay, pointInPolygon, hitTestBoxes, distance, nearestWithinRadius,
-  boundsOf, overlapArea,
+  boundsOf, overlapArea, axisTiles, tileGrid, selectNonOverlapping,
 };
