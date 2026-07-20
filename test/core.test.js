@@ -186,7 +186,11 @@ test("group: duplicate boards count as quantity, not just presence", () => {
   // complete set can be assembled; the extra M7900s are leftover.
   const stack = ["M7900", "M7900", "M7900", "M7901"].map((m) => resolve(idx, m));
   const g = group(idx, stack).options.get("RK611");
-  assert.equal(g.boards.find((b) => b.base === "M7900").count, 3);
+  // The primary listing shows what the complete set(s) actually consume
+  // (capped at fullSets), not the raw held count -- otherwise the same
+  // physical boards would be counted once here and again in leftover below,
+  // implying more boards exist than were actually scanned.
+  assert.equal(g.boards.find((b) => b.base === "M7900").count, 1);
   assert.equal(g.boards.find((b) => b.base === "M7901").count, 1);
   assert.equal(g.fullSets, 1);
   assert.equal(g.complete, true);
@@ -198,6 +202,11 @@ test("group: duplicate boards count as quantity, not just presence", () => {
   assert.equal(leftM7900.present, true);
   assert.equal(leftM7901.count, 0);
   assert.equal(leftM7901.present, false);   // fully consumed by the one complete set
+
+  // Primary + leftover must reconstruct exactly what was scanned -- 3 held
+  // M7900s, 1 held M7901, no more, no less.
+  assert.equal(g.boards.find((b) => b.base === "M7900").count + leftM7900.count, 3);
+  assert.equal(g.boards.find((b) => b.base === "M7901").count + leftM7901.count, 1);
 });
 
 test("group: enough duplicates for multiple complete sets leaves no leftover", () => {
@@ -241,7 +250,11 @@ test("buildExport: leftover duplicates get their own block with quantities", () 
 
   const text = buildExport(idx, stack, { includeMissing: true, exportedAt: "t" });
   assert.match(text, /RK611 {2}\(UNIBUS\) {2}— complete/);
-  assert.match(text, /M7900 {2}RK06\/07 Unibus interface {2}×3/);
+  // The complete-set block shows the one M7900 that set actually uses (no
+  // ×N badge at count 1) -- not ×3, which would double-count the same
+  // physical boards also listed in the leftover block below.
+  assert.match(text, /M7900 {2}RK06\/07 Unibus interface\n/);
+  assert.doesNotMatch(text, /M7900 {2}RK06\/07 Unibus interface {2}×3/);
   assert.match(text, /RK611 {2}\(UNIBUS\) {2}— leftover 1\/2 boards/);
   assert.match(text, /M7900 {2}RK06\/07 Unibus interface {2}×2/);
   assert.match(text, /M7901.*<-- MISSING/);   // fully consumed by the one complete set

@@ -28,7 +28,14 @@ import {
   toSource, toDisplay, hitTestBoxes, distance, nearestWithinRadius, pointInPolygon,
   boundsOf, overlapArea, tileGrid, selectNonOverlapping,
 } from "./geometry.js";
-import { resolveBackendUrl, BACKEND_URL_STORAGE_KEY } from "./backend-config.js";
+import { resolveBackendUrl, BACKEND_URL_STORAGE_KEY, LOCALHOST_NAMES } from "./backend-config.js";
+
+// Same dev/prod signal backend-config.js uses for BACKEND_URL: Render's
+// 512MB-driven limits (tile size here, OCR_MAX_DIMENSION server-side) don't
+// apply to a local dev machine with real memory headroom, so localhost gets
+// the fast/permissive defaults automatically -- see IS_LOCAL_DEV below and
+// backend/README.md for the matching OCR_MAX_DIMENSION=0 server-side flag.
+const IS_LOCAL_DEV = LOCALHOST_NAMES.includes(location.hostname);
 
 const fileInput = document.getElementById("file");
 const display = document.getElementById("stage");
@@ -78,16 +85,23 @@ const RESIZE_HANDLE_HIT_RADIUS = 12; // display px, how close a click must land 
 const RAPIDOCR_UPSCALE_SHORT_SIDE = 736;
 
 // Tiling config for large regions (PLAN.md, "Tiled scanning for large
-// images"). TILE_SIZE defaults to RAPIDOCR_UPSCALE_SHORT_SIDE since that's
-// the size det never scales -- going smaller wastes nothing extra (det
-// upscales back up to the floor regardless) but doesn't help either, and
-// benchmarking a larger tile came out strictly worse on both memory *and*
-// wall time (see PLAN.md Benchmarks), not a trade-off. These are the knobs
-// to raise if this ever runs on a host with real memory headroom instead of
-// Render's 512MB free tier -- kept separate from RAPIDOCR_UPSCALE_SHORT_SIDE
-// (today numerically identical) since one describes the backend's fixed
-// floor and the other is this client's own tunable choice.
-const TILE_SIZE = 736;
+// images"). Production TILE_SIZE defaults to RAPIDOCR_UPSCALE_SHORT_SIDE
+// since that's the size det never scales -- going smaller wastes nothing
+// extra (det upscales back up to the floor regardless) but doesn't help
+// either, and benchmarking a larger tile came out strictly worse on both
+// memory *and* wall time (see PLAN.md Benchmarks), not a trade-off. This is
+// the knob to raise if this ever runs on a *production* host with real
+// memory headroom instead of Render's 512MB free tier -- kept separate from
+// RAPIDOCR_UPSCALE_SHORT_SIDE (today numerically identical) since one
+// describes the backend's fixed floor and the other is this client's own
+// tunable choice.
+//
+// Locally, none of that applies: Infinity always fails tileGrid's
+// single-cell-region check, so every scan sends exactly one request
+// covering the whole region -- fastest possible round trip on a dev
+// machine, matching a local server.py run with OCR_MAX_DIMENSION=0 (see
+// backend/README.md) so that single big request doesn't get 413-rejected.
+const TILE_SIZE = IS_LOCAL_DEV ? Infinity : 736;
 const TILE_OVERLAP_FRAC = 0.15;
 // A region only modestly larger than one tile must not be forced into a
 // multi-tile grid -- the overlap needed to avoid missing text at the seam
@@ -109,6 +123,11 @@ let nextId = 1;
 // [{ box: [x0,y0,x1,y1], done }] in source coords, shown while a multi-tile
 // scan is in flight (see recognizeTiled) -- empty otherwise.
 let tileOverlay = [];
+// Last message passed to setStatusMessage(), or null when idle (bare meta
+// line only). Tracked so updateMeta() -- called on every pan/zoom/rotate to
+// refresh the resolution/zoom% text -- can redraw alongside whatever
+// message is still active instead of silently wiping it.
+let lastStatusMessage = null;
 let selectedId = null;
 let draftBox = null; // { x0, y0, x1, y1 } in source coords, while drawing a new box
 
@@ -205,6 +224,7 @@ async function clearSession() {
 
   fileInput.value = "";
   ctx.clearRect(0, 0, display.width, display.height);
+  lastStatusMessage = null; // don't let a stale message survive the clear
   updateMeta();
   updateButtons();
   renderResultsList();
@@ -269,8 +289,18 @@ function metaLine() {
   return `${name}${full.width}×${full.height}px · rotation ${rotation}° · zoom ${Math.round(view.scale * 100)}%`;
 }
 
+// Refreshes the meta portion (resolution/rotation/zoom%) of the status
+// line -- called on every pan/zoom/rotate. Re-renders through
+// setStatusMessage() when a message is still active (lastStatusMessage) so
+// that message survives the refresh instead of being overwritten by the
+// bare meta line; genuinely idle (no message yet, or explicitly cleared —
+// see clearSession()) falls back to just the meta line.
 function updateMeta() {
-  statusEl.textContent = metaLine();
+  if (lastStatusMessage != null) {
+    setStatusMessage(lastStatusMessage);
+  } else {
+    statusEl.textContent = metaLine();
+  }
 }
 
 function clampView() {
@@ -1186,6 +1216,7 @@ function renderResultsList() {
 // message half is wrapped in its own monospace span so it visually reads as
 // a distinct "system message" rather than blending into the description.
 function setStatusMessage(msg) {
+  lastStatusMessage = msg;
   const meta = metaLine();
   statusEl.textContent = "";
   if (meta) statusEl.append(`${meta} — `);
@@ -1206,6 +1237,7 @@ fileInput.addEventListener("change", () => {
     rotation = 0;
     detections = [];
     selectedId = null;
+    lastStatusMessage = null; // new photo: don't carry over the previous one's status
     resetView();
     updateButtons();
     URL.revokeObjectURL(url);

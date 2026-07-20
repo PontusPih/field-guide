@@ -217,11 +217,18 @@ export function group(idx, resolvedList) {
 
     g.knownBases = orderedBases;
     g.bus = members[0] ? members[0].bus : "";
-    g.boards = boardsAt(countOf);
-    g.presentCount = g.boards.filter((b) => b.present).length;
 
     g.fullSets = orderedBases.length ? Math.min(...orderedBases.map(countOf)) : 0;
     g.complete = g.fullSets > 0;
+
+    // A board's copies used by the fullSets complete set(s) are shown in the
+    // primary listing; any held beyond that go to leftover instead (below) —
+    // never both, or the same physical board would appear counted twice.
+    // Not complete: nothing's consumed by a (nonexistent) set, so the
+    // primary listing is just the raw held counts.
+    const usedCount = g.complete ? (base) => Math.min(countOf(base), g.fullSets) : countOf;
+    g.boards = boardsAt(usedCount);
+    g.presentCount = g.boards.filter((b) => b.present).length;
 
     const hasLeftover = g.complete && orderedBases.some((base) => countOf(base) - g.fullSets > 0);
     g.leftover = hasLeftover ? (() => {
