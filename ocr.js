@@ -872,12 +872,20 @@ async function recognizeTile(x0, y0, [tx0, ty0, tx1, ty1]) {
 // below -- every /ocr upload goes through here, which is also what keeps
 // every upload under the backend's hard size limit (OCR_MAX_DIMENSION):
 // posting `full` directly (the pre-tiling behavior) would exceed it for any
-// realistically-sized photo. `onProgress(done, total)`, if given, fires
-// after each tile completes -- a multi-tile scan is sequential (see below)
-// and each tile takes real time, so callers with many tiles (the
-// whole-photo button especially) can show "tile N/X" instead of leaving the
-// status line static for several seconds.
-async function recognizeTiled(x0, y0, w, h, onProgress) {
+// realistically-sized photo. Options (both optional):
+//   - onProgress(done, total) fires after each tile completes -- a
+//     multi-tile scan is sequential (see below) and each tile takes real
+//     time, so callers with many tiles can show "tile N/X" instead of
+//     leaving the status line static for several seconds.
+//   - onTileFound(tileResults) fires with each tile's own (not yet deduped)
+//     results as they arrive, letting a caller render boxes live instead of
+//     waiting for the whole scan (all tiles + final dedup) to finish. The
+//     eventual return value is the authoritative, deduped set -- a caller
+//     using onTileFound should treat it as provisional and reconcile
+//     against the final return value once the scan completes (a box shown
+//     live from one tile can still get dropped by dedup once a later,
+//     higher-confidence tile finds the same box again).
+async function recognizeTiled(x0, y0, w, h, { onProgress, onTileFound } = {}) {
   if (w <= 0 || h <= 0) return [];
 
   const tiles = tileGrid(w, h, TILE_SIZE, {
@@ -903,7 +911,9 @@ async function recognizeTiled(x0, y0, w, h, onProgress) {
   let allFound = [];
   try {
     for (let i = 0; i < tiles.length; i++) {
-      allFound = allFound.concat(await recognizeTile(x0, y0, tiles[i]));
+      const tileFound = await recognizeTile(x0, y0, tiles[i]);
+      allFound = allFound.concat(tileFound);
+      if (onTileFound) onTileFound(tileFound);
       if (showOverlay) {
         tileOverlay[i].done = true;
         redrawCanvas();
@@ -928,14 +938,31 @@ runOcrBtn.addEventListener("click", async () => {
   if (!full) return;
   setStatusMessage("Running OCR…");
   runOcrBtn.disabled = true;
+  // Only the auto-detected layer gets refreshed — boxes you drew or
+  // recognized by hand (source "manual") survive a re-scan. Cleared up
+  // front (rather than only at the end) so the live per-tile updates below
+  // start from an empty auto layer instead of briefly showing stale boxes
+  // alongside newly-arriving ones.
+  const manualDetections = detections.filter((d) => d.source === "manual");
+  detections = [...manualDetections];
+  redraw();
   try {
-    const found = await recognizeTiled(0, 0, full.width, full.height, (done, total) => {
-      if (total > 1) setStatusMessage(`Scanning tile ${done}/${total}…`);
+    const found = await recognizeTiled(0, 0, full.width, full.height, {
+      onProgress: (done, total) => {
+        if (total > 1) setStatusMessage(`Scanning tile ${done}/${total}…`);
+      },
+      // Show each tile's boxes as soon as they arrive rather than waiting
+      // for the whole scan to finish -- provisional, reconciled below once
+      // recognizeTiled resolves with the final deduped set.
+      onTileFound: (tileFound) => {
+        const newDetections = tileFound.map((d) => ({ id: nextId++, ...d, source: "auto" }));
+        detections = [...detections, ...newDetections];
+        redraw();
+      },
     });
-    // Only the auto-detected layer gets refreshed — boxes you drew or
-    // recognized by hand (source "manual") survive a re-scan.
+    // Reconcile: replace the provisional auto layer with the final,
+    // deduped set (some boxes shown live above may have been superseded).
     const autoDetections = found.map((d) => ({ id: nextId++, ...d, source: "auto" }));
-    const manualDetections = detections.filter((d) => d.source === "manual");
     detections = [...manualDetections, ...autoDetections];
     selectedId = null;
     redraw();
