@@ -200,8 +200,11 @@ spending cap/kill-switch), not pay-per-use exposure.
       on to `server.py`'s own `ThreadingHTTPServer` concurrency instead. Still open if
       a framework migration is ever considered.
 - [ ] Config via environment variables (port, rate limits, allowed origins), not
-      hardcoded constants. Port done (`server.py` reads `$PORT`, defaults to 8642
-      locally); rate limits and allowed origins still hardcoded/absent.
+      hardcoded constants. Port, worker count, and queue depth done (`$PORT`,
+      `$OCR_WORKERS`, `$OCR_QUEUE_MAXSIZE`); rate limits and allowed origins still
+      hardcoded/absent. Tile size, the server-side hard dimension cap, and per-level
+      thread/core counts (ONNX Runtime, OpenCV) also need to land here — see
+      Configurability under Tiled scanning below.
 - [x] `GET /healthz` — added for Render's health check, returns 200 with no OCR work
       (models are already loaded by the time the process can accept any connection at
       all, since `engine = RapidOCR()` runs before the HTTP server starts listening).
@@ -243,36 +246,213 @@ spending cap/kill-switch), not pay-per-use exposure.
       existing hardware, or a provider with a hard spending cap/kill-switch. Pay-per-use
       serverless is a poor fit here unless it has an enforced hard cap, since an abuse
       spike would otherwise translate directly into cost.
-      **Render free tier (512MB) confirmed too small for real use** — a live deploy
-      OOM'd on a single normal-sized upload. Measured why: a single OCR request peaks
-      at ~442-545MB RSS *regardless* of source image resolution (tested 2400x1800 and
-      a synthetic 12MP image — both landed around the same ~545MB ceiling), because
-      RapidOCR resizes internally to its own ~2000px working resolution before the
-      expensive det/cls/rec work runs either way. Pre-resizing the upload to match
-      doesn't lower the ceiling (only moves when the cost is paid); resizing low enough
-      to actually cut memory (~1600px and below) drops real detections, including
-      `M8295` from the regression fixture. Fixed onnxruntime thread counts (vs. the
-      config's default -1) had no measurable effect either. Conclusion: this is an
-      inherent pipeline cost, not a tuning problem — needs a host with real headroom.
-      Oracle Cloud's Always-Free VM (Ampere, 24GB RAM) is the leading candidate on
-      that basis; not yet decided/committed.
-- [ ] Unexplained: peak RSS climbed further (615MB -> 803MB) across two *identical*
-      back-to-back requests in a local test, not just holding steady at the
-      single-request ceiling. Possibly onnxruntime/opencv allocator not releasing
-      memory between calls. Worth investigating before committing to a memory-tight
-      host, separately from the per-request ceiling above.
+      **Render free tier (512MB) OOM'd on a single normal-sized upload** — root-caused,
+      and no longer believed to require a bigger host. Earlier profiling here concluded
+      peak RSS was ~442-545MB *regardless* of source image resolution; that was wrong —
+      it used VmRSS snapshots before/after each pipeline stage, which miss a spike that
+      happens *inside* a single call. Redone with `resource.getrusage().ru_maxrss` (a
+      kernel-tracked high-water mark that can't miss it), peak RSS scales close to
+      linearly with the actual pixel count RapidOCR's detector processes — about 200MB
+      per megapixel of det input, on a ~120MB fixed baseline — between a floor (~0.73Mpx,
+      from det's own internal ~736px short-side auto-upscale, `Det.limit_side_len`) and a
+      ceiling set by `max_side_len` (2000 default, ~3.0Mpx worst case, ~700MB — this is
+      what actually OOM'd Render). `cls`/`rec` cost almost nothing regardless of crop
+      size (fixed ~48px-tall resize per box); det alone drives this. Fix path is now
+      tiling (below), which bounds per-request memory well under 512MB regardless of
+      host size — Render's free tier is viable again once that ships. A bigger host
+      (Oracle Cloud's Always-Free Ampere VM, 24GB RAM, was the leading alternative
+      candidate) remains an option, but becomes a configurability knob (bigger tiles,
+      see below) rather than a requirement.
+- [x] Explained and fixed: peak RSS climbed further (615MB -> 803MB) across two
+      *identical* back-to-back requests in an earlier local test. Root cause:
+      `ThreadingHTTPServer` spawned a fresh OS thread per request, and each new thread
+      doing heavy allocation got its own glibc malloc arena that was never released back
+      — cross-request growth, not a per-request leak. Fixed by moving OCR work off
+      request-handling threads entirely: a bounded job queue plus a small, fixed pool of
+      persistent worker threads (`OCR_WORKERS`, default 1), each loading its own
+      `RapidOCR()` once and reusing it for every job. `ThreadingHTTPServer` still fronts
+      lightweight requests (`/healthz`, `/`) immediately even while a scan is in
+      progress, since heavy allocation never touches a request thread anymore.
 - [ ] TLS termination + routing (own subdomain vs. a path under field-guide.pdp8.se)
+
+**Tiled scanning for large images**
+Design worked out to fix the memory ceiling above without requiring a bigger host.
+`recognizeRegion()` today sends whatever the user draws as one crop, at the photo's
+native resolution (`ocr.js` never resizes on capture) — so a box drawn around a whole
+12MP phone photo would hit the ~700MB ceiling directly. Not yet implemented.
+
+- [ ] **Decided: tile client-side, not server-side.** `recognizeRegion()` already
+      crops a region, POSTs it, and translates the returned crop-local boxes into
+      full-image coordinates — auto-splitting one large drawn region into a grid of
+      tiles through that same pipeline is a natural extension. Doing it server-side
+      would duplicate that crop/translate/merge logic in Python for no real safety
+      benefit, since `max_side_len` already acts as an unconditional backstop on
+      anything reaching `/ocr` regardless of which side tiled it. Client-side also
+      gets progressive per-tile results for free (relevant given the ~10s full-frame
+      estimate below) and naturally paces requests one at a time against the
+      backend's single-worker job queue.
+- [ ] **Tile size: 736x736 squares, not larger.** 736 is det's own upscale floor —
+      smaller tiles cost the same as 736 (nothing saved going below), and a larger
+      tile (1140, benchmarked as a "fewer, bigger tiles" alternative) came out
+      strictly worse, not a trade-off: half as many tiles but 1.85x the total wall
+      time for the same test image (3.31s vs 6.13s, single core/thread), and ~54%
+      slower per megapixel of actual work even after accounting for the bigger
+      tile's greater overlap redundancy. Read as single-threaded CPU inference being
+      sensitive to cache locality — a 736^2 tile's intermediate feature maps likely
+      still fit in cache, a 1140^2 tile's probably don't. Per-tile timing sampled
+      across both example images (30 tiles, 50%-overlap grid): mean 0.35s, p90
+      0.62s, p99 0.71s — content-dependent (empty-background tiles ~0.14s,
+      text-dense tiles up to ~0.71s).
+- [ ] **Graduated single-tile threshold.** A region only modestly larger than one
+      tile (e.g. 800x800) must not be forced into a multi-tile grid — the overlap
+      needed to avoid missing text at the seam approaches 90%+ at that size,
+      multiplying cost for no benefit. Regions up to roughly 1.3-1.5x the tile size
+      in both dimensions should run as a single, modestly-oversized tile instead of
+      splitting; only clearly-larger regions get the grid treatment.
+- [ ] **Grid layout: even redistribution, last tile snapped to the far edge**, so no
+      axis ever produces a sliver/leftover tile smaller than the target size.
+      Computed independently per axis (row count and column count don't depend on
+      each other), which handles odd/elongated aspect ratios without needing
+      non-square tiles:
+      ```
+      function tileStarts(total, tile, overlapFrac = 0.15) {
+        const step = Math.max(1, Math.floor(tile * (1 - overlapFrac)));
+        const starts = [];
+        for (let s = 0; s <= total - tile; s += step) starts.push(s);
+        if (starts[starts.length - 1] !== total - tile) starts.push(total - tile);
+        return starts;
+      }
+      ```
+      Needs an explicit `total <= tile` early-out (single tile, no split) that the
+      snippet above doesn't yet handle — feeds the single-tile threshold above.
+- [ ] **Server-side hard dimension limit**, independent of whether client-side
+      tiling behaves correctly. Reject (413) any `/ocr` upload with
+      `max(width, height)` over a configured cap (~1200px, comfortably above the
+      largest expected single-tile case) before RapidOCR ever sees the bytes.
+      `max_side_len` alone is not a reliable hard limit for arbitrary input shapes —
+      it caps the image's longer side, but a sufficiently elongated input (e.g. a
+      thin strip) can get downscaled below det's own 736px short-side floor by the
+      Global resize, then scaled back *up* past the original cap by det's own
+      internal resize, defeating the intended limit. An explicit pre-check on
+      decoded dimensions doesn't have that failure mode.
+- [ ] **Dedup: duplicate removal only, no cross-tile box stitching.** Overlapping
+      tiles will often detect the same complete box twice; translate every tile's
+      boxes to full-image coordinates, then drop any box whose IoU against an
+      already-kept box exceeds a threshold (~0.5), keeping the higher-confidence
+      one. Deliberately does not attempt to reconstruct a box that got cut in half
+      at a tile seam — that surfaces as a visible partial/garbled detection, an
+      acceptable failure the user can fix by redrawing the selection so the seam
+      doesn't fall on a label.
+- [ ] **Configurability — every level identified during this investigation must be
+      a config knob, not a hardcoded assumption**, so a future deploy on a bigger
+      host can trade the current conservative defaults for bigger tiles / more
+      throughput without a code change:
+      - Tile size, overlap fraction, and the single-tile threshold multiplier — the
+        numbers above are pinned to Render's 512MB free tier; a bigger box should be
+        able to raise the tile size (fewer, cheaper-per-pixel-of-progress tiles, per
+        the ~200MB/Mpx model above) via config, not a code edit.
+      - The server-side hard dimension cap (~1200px default) — same reasoning.
+      - `OCR_WORKERS` (already an env var) — more workers only helps on a host with
+        more than one core; stays at 1 on Render's single-core free tier.
+      - ONNX Runtime's `intra_op_num_threads`/`inter_op_num_threads` — currently
+        always left at RapidOCR's own default (-1, ORT auto-detects, which
+        over-provisions inside a container since `os.cpu_count()` sees the host's
+        full core count, not any cgroup limit). Not currently wired to config in
+        `server.py` at all; needs env vars alongside `OCR_WORKERS`.
+      - OpenCV's own internal thread pool (`cv2.setNumThreads()`) — separate from
+        ONNX Runtime's thread settings, not touched by them, and not currently set
+        anywhere in `server.py`. Same over-provisioning risk; needs its own knob.
+
+**Benchmarks**
+Raw data behind the design above, kept for reference. All measured on this dev
+machine pinned to one core (`taskset -c 0`), ONNX Runtime and OpenCV threads both
+capped to 1, approximating Render's single-core free tier — not any particular
+production host.
+
+Memory vs. det input size (single process, one `RapidOCR()` instance, crops of
+`IMG_0664.jpg` at increasing size, each run to a stable `ru_maxrss` plateau):
+
+| crop size | boxes found | plateau RSS |
+|---|---|---|
+| 240x180 | 3 | 262MB |
+| 360x270 | 5 | 263MB |
+| 480x360 | 7 | 263MB |
+| 672x504 | 11 | 263MB |
+| 960x720 | 29 | 263MB |
+| 1320x990 | 38 | 381MB |
+| 1680x1260 | 41 | 545MB |
+| 2040x1530 | 45 | 706MB |
+| 2400x1800 (full; downscaled to 2000x1500 by `max_side_len`) | 47 | 708MB |
+
+Flat from 360x270 to 960x720 because det's own internal resize (`Det.limit_type:
+min`, `limit_side_len: 736`) upscales anything with a shorter side under 736px up to
+exactly 736px — all of those crops land on the identical resized tensor regardless
+of their own size. Real growth starts only once a crop's shorter side already
+clears 736 unscaled.
+
+Same data reworked to the *actual* post-resize det input (crop size above, after
+both `max_side_len` and the 736-floor resize, rounded to a multiple of 32) — this
+is the table to use when picking a tile size for a given memory budget:
+
+| det input (post-resize) | megapixels | measured total RSS | marginal over ~120MB baseline | MB/Mpx |
+|---|---|---|---|---|
+| 736x992 (the floor — every crop below it lands here) | 0.73 | 263MB | 143MB | 196 |
+| 992x1312 | 1.30 | 381MB | 261MB | 200 |
+| ~1248x1680 | 2.10 | 545MB | 425MB | 203 |
+| 1504x1984 (`max_side_len`-capped ceiling) | 2.98 | 706MB | 586MB | 196 |
+
+~200MB/Mpx holds within a few percent across the whole range, giving a general
+sizing formula: `peak RSS ≈ 120MB + 200MB x (tile megapixels)`, clamped between the
+0.73Mpx floor and whatever `max_side_len` allows at the top. E.g. a target budget of
+320MB total (200MB marginal) implies a tile around 1.0Mpx (~832x1202 at a 736 short
+side); 420MB total (300MB marginal) implies ~1.5Mpx (~736x2040, though by the
+tile-size timing benchmark below that's already past the point where bigger tiles
+stop paying for themselves in wall time, not just memory).
+
+Per-stage breakdown (full 2400x1800 image, two calls to separate cold-start cost
+from steady state):
+
+| stage | call 0 | call 1 |
+|---|---|---|
+| det | +404MB | +133MB |
+| cls | +0MB | +0MB |
+| rec | +0MB | +0MB |
+
+Confirms det alone drives the memory cost; `cls`/`rec` are negligible regardless of
+box count (47 boxes both calls).
+
+Tile-size timing, grid over the full 2400x1800 image (15% overlap):
+
+| tile size S | tiles | total wall time | avg per-tile |
+|---|---|---|---|
+| 736 | 12 | 3.31s | 0.274s |
+| 1140 | 6 | 6.13s | 1.019s |
+
+Half the tiles at S=1140, but 1.85x the total time — bigger tiles are worse, not a
+trade-off (cache-locality read in Tiled scanning above).
+
+Per-tile timing at the chosen S=736, sampled across both example images (50%
+overlap grid, 30 tiles total, within the largest exact multiple of 736 in each
+image):
+
+| image | tiles | min | median | mean | max | stdev |
+|---|---|---|---|---|---|---|
+| IMG_0664.jpg | 15 | 0.135s | 0.234s | 0.269s | 0.499s | 0.128s |
+| IMG_0648.jpg | 15 | 0.135s | 0.506s | 0.430s | 0.714s | 0.199s |
+| combined | 30 | 0.135s | 0.278s | 0.349s | 0.714s | 0.184s |
+
+p90 0.621s, p99 0.714s. Same tile size, same resolution, but `IMG_0648.jpg` tiles
+ran ~60% slower on average than `IMG_0664.jpg` tiles — content-dependent (det's
+postprocessing and the downstream cls/rec crop count scale with how much text a
+tile actually contains, not just its pixel count).
 
 **Security & cost control** — free, unauthenticated, public-facing service
 - [ ] Per-IP rate limiting / throttling
-- [ ] Bounded concurrency — a semaphore in front of the RapidOCR engine so unbounded
-      parallel requests can't spike CPU/memory (`server.py`'s `ThreadingHTTPServer`
-      currently spawns one thread per connection with no limit). Pair with a **queue
-      with a depth cap**: once the cap is hit, reject immediately (e.g. 429) rather
-      than let requests pile up — a request that finally gets processed far later is
-      likely for a client that's already given up, so accepting it just wastes
-      compute for no one. Sizing (concurrency N, queue depth K) needs real numbers
-      once a host's actual CPU/RAM allotment and per-request OCR time are known.
+- [x] Bounded concurrency — done via the job-queue + persistent-worker-pool design
+      above (`OCR_QUEUE_MAXSIZE`, default 2). A full queue returns 503 with
+      `Retry-After` rather than letting requests pile up for a client that's likely
+      already given up. Sizing (worker count, queue depth) is a config knob now, not
+      yet tuned against real host numbers.
 - [ ] Upload size limit — reject well before ~10-20MB, checked on both sides: client
       refuses to send an oversized file (saves the round trip), server hard-rejects
       regardless (the client check is a courtesy, not the actual defense)
