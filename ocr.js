@@ -218,6 +218,7 @@ async function clearSession() {
   draftBox = null;
   hoverDeleteId = null;
   hoverBoxId = null;
+  clearThumbnailCache();
 
   fileInput.value = "";
   ctx.clearRect(0, 0, display.width, display.height);
@@ -254,6 +255,7 @@ function clearDetections() {
   draftBox = null;
   hoverDeleteId = null;
   hoverBoxId = null;
+  clearThumbnailCache();
   lastStatusMessage = null; // don't let a stale message survive the clear
 
   updateMeta(); // re-renders the (now blank) status line
@@ -339,7 +341,7 @@ function zoomTo(newScale, anchorDisplayPt) {
   view.y = anchorSource.y - (anchorDisplayPt.y - view.offsetY) / view.scale;
   clampView();
   updateMeta();
-  redraw();
+  redrawCanvas(); // view-only: no list content changed, nothing to persist
 }
 
 function colorFor(detection) {
@@ -733,7 +735,7 @@ display.addEventListener("pointermove", (e) => {
     view.y = panStart.vy - (p.y - panStart.py) / view.scale;
     clampView();
     updateMeta();
-    redraw();
+    redrawCanvas(); // view-only: no list content changed, nothing to persist
   } else if (dragging === "draw") {
     const sp = toSource(p, view);
     draftBox.x1 = sp.x;
@@ -810,11 +812,9 @@ display.addEventListener("wheel", (e) => {
   e.preventDefault();
   const anchor = pointerDisplayPos(e);
   if (e.ctrlKey) {
-    // Scale the per-event factor by the actual gesture magnitude (deltaY)
-    // instead of a fixed step — a fixed step means a trackpad's early
-    // sparse/small pinch events zoom just as much as a later fast burst,
-    // which reads as "nothing, nothing, then a lot." Clamped so a rare
-    // large deltaY spike can't jump more than ~1.4x in a single event.
+    // Per-event factor scales with the gesture's own magnitude (deltaY), so a
+    // trackpad's sparse early pinch events zoom less than a later fast burst.
+    // Clamped so a large deltaY spike can't jump more than ~1.4x in one event.
     const factor = Math.max(0.7, Math.min(1.4, Math.exp(-e.deltaY * ZOOM_SENSITIVITY)));
     zoomTo(view.scale * factor, anchor);
   } else {
@@ -822,7 +822,7 @@ display.addEventListener("wheel", (e) => {
     view.y += e.deltaY / view.scale;
     clampView();
     updateMeta();
-    redraw();
+    redrawCanvas(); // view-only: no list content changed, nothing to persist
   }
 }, { passive: false });
 
@@ -871,6 +871,7 @@ function rotate(delta) {
     box: d.box.map((pt) => rotatePoint(pt, delta, oldW, oldH)),
   }));
   rotation = (rotation + delta + 360) % 360;
+  clearThumbnailCache(); // `full` is re-rendered, so every cached crop is stale
   resetView({ preserveDetections: true });
   updateButtons();
 }
@@ -1091,11 +1092,22 @@ async function ensureWorkerRunning() {
 
 const MAX_THUMB_HEIGHT = 36; // display px
 
-// Cached on the detection, keyed by its box, so hover-driven redraws reuse
-// the data URL instead of re-encoding a PNG on every mouse move.
+// detection id -> { key, url }, key being the box coordinates, so editing a
+// box re-crops it. Held here rather than on the detection objects themselves:
+// persistState() serialises `detections` wholesale, so a data URL per box
+// would be written to IndexedDB on every save.
+const thumbnailCache = new Map();
+
+// Ids restart at 1 after a clear, and `full`'s contents change on rotate or a
+// new photo -- either way the cached crops no longer describe their ids.
+function clearThumbnailCache() {
+  thumbnailCache.clear();
+}
+
 function thumbnailDataUrl(detection) {
   const key = JSON.stringify(detection.box);
-  if (detection._thumbKey === key && detection._thumbUrl) return detection._thumbUrl;
+  const cached = thumbnailCache.get(detection.id);
+  if (cached && cached.key === key) return cached.url;
 
   const b = boundsOf(detection.box);
   const w = Math.max(1, Math.round(b.maxX - b.minX));
@@ -1109,9 +1121,9 @@ function thumbnailDataUrl(detection) {
   c.height = outH;
   c.getContext("2d").drawImage(full, b.minX, b.minY, w, h, 0, 0, outW, outH);
 
-  detection._thumbKey = key;
-  detection._thumbUrl = c.toDataURL("image/png");
-  return detection._thumbUrl;
+  const url = c.toDataURL("image/png");
+  thumbnailCache.set(detection.id, { key, url });
+  return url;
 }
 
 // Frames the box with 3x its own width/height as margin on each side, so the
@@ -1247,6 +1259,7 @@ fileInput.addEventListener("change", () => {
     rotation = 0;
     detections = [];
     selectedId = null;
+    clearThumbnailCache();
     lastStatusMessage = null; // new photo: don't carry over the previous one's status
     resetView();
     updateButtons();
@@ -1281,7 +1294,9 @@ async function restoreSession() {
   img = nextImg;
   fileName = blob.name || ""; // set before resetView() so its info-line update includes it
   rotation = state?.rotation || 0;
-  detections = state?.detections || [];
+  // Sessions saved before thumbnails moved into thumbnailCache carry a data
+  // URL per box; drop those fields rather than persisting them onward.
+  detections = (state?.detections || []).map(({ _thumbKey, _thumbUrl, ...d }) => d);
   nextId = detections.reduce((max, d) => Math.max(max, d.id), 0) + 1;
   resetView({ preserveDetections: true });
   updateButtons();
