@@ -1,5 +1,3 @@
-"use strict";
-
 // Integration tests against the real field-guide-02.txt (2002 edition) — guard
 // invariants that matter for the app and catch regressions if the file is
 // updated. Run: `node --test`.

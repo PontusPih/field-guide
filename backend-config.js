@@ -1,5 +1,3 @@
-"use strict";
-
 // Resolves which OCR backend ocr.js talks to, with no build step or
 // per-environment file. Two mechanisms, checked in order:
 //

@@ -887,6 +887,9 @@ async function recognizeTile([x0, y0, x1, y1], signal) {
   cropCanvas.height = th;
   cropCanvas.getContext("2d").drawImage(full, x0, y0, tw, th, 0, 0, tw, th);
   const blob = await new Promise((resolve) => cropCanvas.toBlob(resolve, "image/png"));
+  // toBlob yields null if the canvas can't be encoded; posting that would send
+  // an empty body and read as a tile that found nothing.
+  if (!blob) throw new Error("could not encode tile");
 
   const resp = await fetch(`${BACKEND_URL}/ocr`, { method: "POST", body: blob, signal });
   // Throwing rather than returning [] keeps a rejected tile (503 queue full,
@@ -919,8 +922,15 @@ function tileBoxesFor(x0, y0, w, h) {
 // next drain, not the one being cancelled. ensureWorkerRunning()'s teardown
 // reads the flag to tell the two apart.
 function enqueueTile(item) {
-  scanQueue.push({ ...item, enqueuedAfterAbort: scanAbortController?.signal.aborted === true });
-  tileOverlay.push({ box: item.box, done: false });
+  // The queue item holds its own overlay entry, so marking a tile done is a
+  // direct write rather than a search keyed on shared array identity.
+  const overlay = { box: item.box, done: false };
+  scanQueue.push({
+    ...item,
+    overlay,
+    enqueuedAfterAbort: scanAbortController?.signal.aborted === true,
+  });
+  tileOverlay.push(overlay);
 }
 
 runOcrBtn.addEventListener("click", () => {
@@ -1023,8 +1033,7 @@ async function ensureWorkerRunning() {
       }
       if (signal.aborted) break; // discard a result that arrived the instant abort() landed
 
-      const overlayEntry = tileOverlay.find((t) => t.box === item.box);
-      if (overlayEntry) overlayEntry.done = true;
+      item.overlay.done = true;
       redrawCanvas();
 
       if (item.kind === "auto") {
@@ -1067,7 +1076,9 @@ async function ensureWorkerRunning() {
       carried.filter((t) => t.placeholderId != null).map((t) => t.placeholderId),
     );
     scanQueue = carried.map((t) => ({ ...t, enqueuedAfterAbort: false }));
-    tileOverlay = carried.map((t) => ({ box: t.box, done: false }));
+    // Carried tiles were never drained, so their overlay entries are still
+    // undone and can be reused as-is.
+    tileOverlay = carried.map((t) => t.overlay);
 
     // A cancelled region keeps whatever tiles came back before the cancel
     // landed, matching the auto layer's partial-keep above. A placeholder

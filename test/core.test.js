@@ -1,5 +1,3 @@
-"use strict";
-
 // Unit tests for the pure parsing/lookup logic, run against a synthetic fixture
 // in the 2002 guide format. Run: `node --test`.
 

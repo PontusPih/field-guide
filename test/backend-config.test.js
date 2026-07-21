@@ -1,5 +1,3 @@
-"use strict";
-
 // Unit tests for the OCR backend URL resolution logic used by ocr.js.
 // Run: `node --test` (or `node --test test/backend-config.test.js`)
 

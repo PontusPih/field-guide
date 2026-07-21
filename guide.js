@@ -1,5 +1,3 @@
-"use strict";
-
 // Field guide app — DOM + fetch. All parsing/lookup logic lives in core.js.
 // The input box's contents survive navigation (see REMEMBERED_INPUT_KEY
 // below) rather than resetting to the sample list.
