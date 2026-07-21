@@ -122,6 +122,11 @@ class Page {
   #nextId = 0;
   #pending = new Map();
   consoleErrors = [];
+  // clearSession()/clearDetections() both gate on window.confirm(); a dialog
+  // left unhandled blocks the page indefinitely, so one is always answered
+  // automatically. A spec that needs to answer "Cancel" instead sets this to
+  // false before the click that triggers it.
+  dialogAccept = true;
 
   constructor(ws) {
     this.#ws = ws;
@@ -145,6 +150,9 @@ class Page {
     if (msg.method === "Log.entryAdded" && msg.params.entry.level === "error") {
       const { text, url } = msg.params.entry;
       if (!/favicon/i.test(url ?? "")) this.consoleErrors.push(`${text} [${url ?? "no url"}]`);
+    }
+    if (msg.method === "Page.javascriptDialogOpening") {
+      this.send("Page.handleJavaScriptDialog", { accept: this.dialogAccept });
     }
   }
 

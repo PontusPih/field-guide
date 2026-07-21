@@ -37,12 +37,11 @@ python3 -m http.server 8123        # frontend, from the repo root
       `clearSession()`, `clearDetections()`, `rotate()`, and loading a new photo.
       `restoreSession()` strips `_thumbKey`/`_thumbUrl` from sessions saved before the
       change, so an existing session stops carrying its data URLs forward.
-- [ ] **Verify.** `node --check ocr.js` and `npm test` pass (62/62). **Manual check still
-      outstanding:** load a photo, scan, then pan and zoom with ~20 boxes present — motion
-      should stay smooth and the list must not flicker. Reload and confirm the session
-      restores with boxes intact (this is what proves the persistence path still works after
-      the cache moved off it). Rotate with boxes present and confirm the list thumbnails
-      re-crop to match.
+- [ ] **Verify.** `node --check ocr.js` and `npm test` pass. Reload restores the session with
+      boxes intact, and rotating re-crops the list thumbnails — both confirmed in a browser.
+      **Deliberately still open:** the pan/zoom smoothness check with ~20 boxes present.
+      Whether motion feels smooth and the list doesn't flicker is a judgement to make by
+      hand; the author will do it at some later stage. Nothing else depends on it.
 - [x] **Consider.** Resolved as yes — `rotate()` clears the cache. Box coordinates change
       under rotation, so the key check catches it in almost every case, but a centrally
       symmetric box on a square image can rotate onto its own coordinates while `full`'s
@@ -63,9 +62,11 @@ python3 -m http.server 8123        # frontend, from the repo root
       browser: pointing the `fieldGuideBackendUrl` override at the static file server (which
       returns 501 for POST) produced `1 tile(s) failed (HTTP 501)`, where the pre-fix code
       reported `Scan complete, nothing found` for the identical request.
-- [ ] **Consider.** Whether 503 specifically deserves a bounded retry with `Retry-After`
-      rather than being reported as a failure — the backend returns it precisely because the
-      request is worth resending. Possibly its own step.
+- [x] **Consider.** Resolved: **no automatic retry.** A failed region stays the user's to
+      re-run, which keeps soft and transient backend problems visible instead of smoothing
+      them over — an automatic `Retry-After` loop would hide exactly the flakiness worth
+      noticing. What this does need is for a failed box to stay retryable, which it
+      currently isn't; see step 8.
 
 ## Step 3 — don't discard work enqueued during scan teardown
 
@@ -177,6 +178,33 @@ python3 -m http.server 8123        # frontend, from the repo root
       everything moved; splitting rect math from detection display kept each destination
       honest, and `marginFor` staying put is the same judgement in the other direction.
 
+## Step 8 — a failed box stays retryable
+
+- [ ] **Change.** A manual region whose tiles all failed is currently indistinguishable from
+      one that genuinely holds no text: the worker's `catch` turns a failure into
+      `found = []`, and the region then sets `placeholder.attempted = true`. The box renders
+      "no text found", drops out of "Recognize new boxes" (which filters on `!d.attempted`),
+      and becomes eligible for "Prune empty" — so a transient 503 silently presents as a
+      settled negative result, and the work is thrown away rather than left to retry.
+      Track per-region whether any of its tiles errored (an `errored` flag on the
+      `pendingPlaceholders` entry, set beside the existing `errorCount++`). A region that
+      errored and found nothing keeps `attempted` false, so it stays "not yet recognized"
+      and remains eligible for a re-run the user triggers. Step 2's status line already
+      names the failure; this is about the box, not the message.
+      Deliberately no automatic retry — see step 2's Consider.
+- [ ] **Verify.** Browser spec, in `test/browser/`: stub `/ocr` to 503 for a manual region,
+      confirm the box stays pending (not "no text found"), that "Recognize new boxes" is
+      still enabled for it, and that a second run with the stub returning text resolves it
+      normally. Then mutation-test it — leaving `attempted = true` unconditionally must fail
+      the spec, or the spec is not testing the fix.
+- [ ] **Consider.** Whether a region that *partly* failed (some tiles returned text, others
+      503'd) should also stay pending. Splicing in a partial result loses the failed tiles
+      with no trace, but keeping the region pending discards text that was genuinely found.
+      Leaning towards: splice the partial result and let the status line carry the failure
+      count, since the alternative throws away good work. Undecided.
+      The auto path needs nothing here: a failed whole-photo tile produces no box to mark,
+      and the status line already reports the count.
+
 ## Deferred — the full `ocr.js` restructure
 
 `ocr.js` is ~1300 lines spanning roughly ten concerns (config, persistence, canvas rendering,
@@ -196,12 +224,43 @@ and Chrome instance on OS-assigned ports, a throwaway profile removed on exit, a
 skips itself when no Chrome is installed. Waits poll for an observable condition; there
 are no fixed sleeps.
 
-What remains before the restructure is **coverage, not tooling**. `test/browser/` holds one
-spec, for tiling. The restructure needs characterization specs written and green against
-the *current* code first — box drawing, resize, move, delete, select, prune, clear,
-session restore, scan cancel/resume — since a spec written afterwards only proves the code
-does what it now does. That is the next step, and it is now ordinary work rather than an
-open question.
+**Characterization coverage is now in place.** `test/browser/` holds five specs, 31 tests
+total, all green against the current code and all mutation-tested against the specific
+behaviour each one exists to pin down:
+
+- `tiling.spec.mjs` (4) — region tiling, from step 5/the tile-size override work.
+- `interaction.spec.mjs` (11) — draw, select/deselect, resize (both a grabbed and an
+  un-grabbed corner — see below), move, edit-invalidates-recognition, and all three ways
+  to delete a box (keyboard, canvas hotspot, list button).
+- `list-actions.spec.mjs` (7) — Prune overlapping (score-ranked keep, no-op when nothing
+  overlaps), Prune empty (vs. never-tried, vs. recognized), Clear boxes (including a
+  declined confirmation).
+- `session.spec.mjs` (5) — reload restores photo + boxes exactly, Clear removes both and
+  stays cleared, rotation remaps box coordinates.
+- `scan-lifecycle.spec.mjs` (4) — plain cancel, the step-3 carry-over fix (re-running
+  while a cancelled drain is still tearing down), and a cancelled manual region staying
+  retryable rather than wedging behind a stale placeholder.
+
+Shared boot/gesture helpers live in `fixtures.mjs`, factored out once a second spec needed
+them, so they can't drift between specs the way `harness.mjs`'s job is to prevent Chrome
+lifecycle from drifting. `harness.mjs` also gained `dialogAccept`: `confirm()` is answered
+automatically (accept by default), since an unhandled dialog blocks the page indefinitely.
+
+Two mistakes worth recording, since both are the same class of gap the tiling spec's own
+mutation testing found in step 7:
+
+- **A test can pass by accident.** `interaction.spec.mjs`'s first resize test only ever
+  grabbed the drawn box's original (top-left) corner — hardcoding the handle index to 0
+  didn't fail it, because that's the corner it always grabs. A second test dragging the
+  *opposite* corner was needed to actually exercise "resize from wherever was grabbed."
+- **A race can hide in the test, not the app.** The Clear-boxes-then-reload test reloaded
+  immediately after the click, racing `clearSession()`'s `await clearStoredSession()` —
+  which runs *after* the synchronous UI reset, so the assertions passed but the reload
+  could occasionally beat the delete. Fixed by polling IndexedDB directly for the delete
+  to land, rather than a fixed sleep.
+
+What remains before the restructure itself is the author's call, not a coverage gap: see
+the tooling paragraph above, now resolved, and the open question just below.
 
 ## Related backlog
 
