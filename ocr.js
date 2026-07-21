@@ -49,6 +49,7 @@ const pruneOverlappingBtn = document.getElementById("pruneOverlapping");
 const pruneEmptyBtn = document.getElementById("pruneEmpty");
 const deleteBtn = document.getElementById("deleteSelected");
 const clearBtn = document.getElementById("clearScan");
+const clearBoxesBtn = document.getElementById("clearBoxes");
 const goToGuideBtn = document.getElementById("goToGuide");
 const statusEl = document.getElementById("status");
 const resultsEl = document.getElementById("results");
@@ -121,16 +122,39 @@ let minScale = 1;
 
 let detections = []; // [{ id, box: [[x,y]x4] in source coords, text, score }]
 let nextId = 1;
-// [{ box: [x0,y0,x1,y1], done }] in source coords, shown while a multi-tile
-// scan is in flight (see recognizeTiled) -- empty otherwise.
+
+// A whole-photo "Run OCR" is just a region that happens to cover the full
+// image; a drawn box is a smaller region. Both are reduced to the same
+// thing at enqueue time -- a flat list of already-tile-sized crops, in full
+// image coordinates -- and drained by one worker (see ensureWorkerRunning()
+// below). This is also why per-tile dedup was dropped: overlapping tiles
+// commonly detect the same label twice regardless of which button enqueued
+// them, and rather than silently resolving that automatically (as a prior
+// version of this code did, per-call), it's left for the existing manual
+// "Prune overlapping" button -- one dedup path instead of two, and the user
+// sees (and can inspect) the raw per-tile results before anything is merged.
+// [{ box: [x0,y0,x1,y1], kind: "auto" | "manual", placeholderId? }]
+let scanQueue = [];
+// placeholderId -> { placeholder, remaining, found: [], gotUpscaleBoost }.
+// A manual (drawn-box) region may itself need more than one tile (a large
+// drawn box); the placeholder is only spliced out once every tile it
+// produced has reported back -- see ensureWorkerRunning().
+let pendingPlaceholders = new Map();
+// [{ box: [x0,y0,x1,y1], done }] in source coords, one entry per queued/
+// in-flight/completed tile for the whole current drain -- empty when idle.
 let tileOverlay = [];
-// Non-null while any recognizeTiled() call is in flight (whole-photo or
-// per-region) -- both the "is a scan running" flag and the means to cancel
-// it (cancelScanBtn / clearSession() / loading a new photo all call
-// .abort() on it). rotate() doesn't remap tileOverlay, so rotating mid-scan
-// would leave the live tile-progress outlines in stale pre-rotation
-// coordinates -- disable rotation instead (see updateButtons()).
+// Non-null while the queue worker is draining -- both the "is a scan
+// running" flag and the means to cancel it (cancelScanBtn / clearSession()
+// / loading a new photo all call .abort() on it). rotate() doesn't remap
+// tileOverlay, so rotating mid-scan would leave the live tile-progress
+// outlines in stale pre-rotation coordinates -- disable rotation instead
+// (see updateButtons()).
 let scanAbortController = null;
+// Set by clearDetections() when it cancels a scan still in flight -- tells
+// ensureWorkerRunning()'s finally to skip its own completion message this
+// one time, since clearDetections() (unlike clearSession()) keeps `img` set,
+// so the worker's own `if (img)` guard wouldn't otherwise catch this case.
+let suppressScanSummary = false;
 // Last message passed to setStatusMessage(), or null when idle (bare meta
 // line only). Tracked so updateMeta() -- called on every pan/zoom/rotate to
 // refresh the resolution/zoom% text -- can redraw alongside whatever
@@ -248,6 +272,38 @@ async function clearSession() {
   }
 }
 clearBtn.addEventListener("click", clearSession);
+
+// Narrower than clearSession(): drops every box (drawn, pending, or
+// recognized) but keeps the loaded photo, so re-drawing/re-scanning doesn't
+// need reloading the file first.
+function clearDetections() {
+  if (detections.length === 0) return;
+  if (!confirm("Clear all boxes? The loaded photo is kept.")) return;
+
+  // Stop any in-flight scan rather than letting it keep running against a
+  // box list that's about to be wiped out from under it (see clearSession()).
+  // Unlike clearSession(), img stays set here, so ensureWorkerRunning()'s own
+  // `if (img)` guard won't stop it from posting a stale completion summary
+  // over this now-empty list once the abort lands -- suppressScanSummary
+  // tells it to skip that message this one time instead.
+  if (scanAbortController) {
+    suppressScanSummary = true;
+    scanAbortController.abort();
+  }
+
+  detections = [];
+  nextId = 1;
+  selectedId = null;
+  draftBox = null;
+  hoverDeleteId = null;
+  hoverBoxId = null;
+  lastStatusMessage = null; // don't let a stale message survive the clear
+
+  updateMeta(); // actually blanks the status line -- lastStatusMessage alone doesn't re-render it
+  updateButtons();
+  redraw();
+}
+clearBoxesBtn.addEventListener("click", clearDetections);
 
 function rotatedCanvas(image, rotationDeg) {
   const c = document.createElement("canvas");
@@ -507,8 +563,8 @@ function drawDeleteHotspot() {
   }
 }
 
-// Tile grid for an in-flight multi-tile scan (see recognizeTiled) — dashed
-// while a tile is still queued/in-flight, solid once its result is back.
+// Tile grid for the current scan queue drain (see ensureWorkerRunning) —
+// dashed while a tile is still queued/in-flight, solid once its result is back.
 // Deliberately a plain outline (no label/color-by-confidence) so it reads
 // as a different kind of thing from the detection boxes drawn over it.
 function drawTileOverlay() {
@@ -621,18 +677,20 @@ function pruneEmpty() {
 function updateButtons() {
   const hasImage = !!img;
   for (const b of [rotateLeftBtn, rotateRightBtn]) b.disabled = !hasImage || !!scanAbortController;
-  // Mutual exclusion: only one scan (whole-photo or per-region) runs at a
-  // time -- both share the single scanAbortController slot, so letting a
-  // second one start would silently orphan whichever scan started first
-  // (Cancel/Clear would only ever be able to reach the newer one).
-  runOcrBtn.disabled = !hasImage || !!scanAbortController;
+  // Both buttons below just push tile(s) onto the shared scanQueue and
+  // (re)start the drain worker -- see ensureWorkerRunning() -- so, unlike
+  // an earlier version of this code, neither needs to wait for the other's
+  // scan to finish; clicking either while a scan is already running just
+  // adds more work to the same queue.
+  runOcrBtn.disabled = !hasImage;
   cancelScanBtn.disabled = !scanAbortController;
   deleteBtn.disabled = selectedId == null;
-  recognizePendingBtn.disabled = !detections.some((d) => d.score == null && !d.attempted) || !!scanAbortController;
+  recognizePendingBtn.disabled = !detections.some((d) => d.score == null && !d.attempted);
   pruneOverlappingBtn.disabled = computeOverlapWarnings().size === 0;
   pruneEmptyBtn.disabled = !detections.some((d) => d.score == null && d.attempted);
   goToGuideBtn.disabled = !detections.some((d) => d.score != null);
   clearBtn.disabled = !hasImage && detections.length === 0;
+  clearBoxesBtn.disabled = detections.length === 0;
 }
 
 // The canvas's rendered CSS size can differ from its internal pixel buffer
@@ -891,163 +949,49 @@ function rotate(delta) {
 rotateLeftBtn.addEventListener("click", () => rotate(-90));
 rotateRightBtn.addEventListener("click", () => rotate(90));
 
-// Crops one tile from `full` at (x0,y0) (region-local origin) sized
-// (tx0,ty0)-(tx1,ty1) and posts it to /ocr, returning results translated
-// into full-image coordinates. Shared by every caller of recognizeTiled.
-async function recognizeTile(x0, y0, [tx0, ty0, tx1, ty1], signal) {
-  const tw = tx1 - tx0;
-  const th = ty1 - ty0;
+// Crops [x0,y0,x1,y1] (full-image coordinates) from `full` and posts it to
+// /ocr, returning results translated back into full-image space.
+async function recognizeTile([x0, y0, x1, y1], signal) {
+  const tw = x1 - x0;
+  const th = y1 - y0;
   const cropCanvas = document.createElement("canvas");
   cropCanvas.width = tw;
   cropCanvas.height = th;
-  cropCanvas.getContext("2d").drawImage(full, x0 + tx0, y0 + ty0, tw, th, 0, 0, tw, th);
+  cropCanvas.getContext("2d").drawImage(full, x0, y0, tw, th, 0, 0, tw, th);
   const blob = await new Promise((resolve) => cropCanvas.toBlob(resolve, "image/png"));
 
   const resp = await fetch(`${BACKEND_URL}/ocr`, { method: "POST", body: blob, signal });
   const found = resp.ok ? await resp.json() : [];
   // f.box is in tile-local coordinates; translate back to full-image space.
   return found.map((f) => ({
-    box: f.box.map(([x, y]) => [x + x0 + tx0, y + y0 + ty0]),
+    box: f.box.map(([x, y]) => [x + x0, y + y0]),
     text: f.text,
     score: f.score,
   }));
 }
 
-// Runs the (x0,y0)-(x0+w,y0+h) region of `full` through OCR, auto-tiling
-// into RapidOCR-sized pieces if the region is large (see PLAN.md, "Tiled
-// scanning for large images") and deduping tile-boundary duplicates.
-// Shared by the whole-photo "Run OCR" button and per-drawn-box recognition
-// below -- every /ocr upload goes through here, which is also what keeps
-// every upload under the backend's hard size limit (OCR_MAX_DIMENSION):
-// posting `full` directly (the pre-tiling behavior) would exceed it for any
-// realistically-sized photo. Options (both optional):
-//   - onProgress(done, total) fires after each tile completes -- a
-//     multi-tile scan is sequential (see below) and each tile takes real
-//     time, so callers with many tiles can show "tile N/X" instead of
-//     leaving the status line static for several seconds.
-//   - onTileFound(tileResults) fires with each tile's own (not yet deduped)
-//     results as they arrive, letting a caller render boxes live instead of
-//     waiting for the whole scan (all tiles + final dedup) to finish. The
-//     eventual return value is the authoritative, deduped set -- a caller
-//     using onTileFound should treat it as provisional and reconcile
-//     against the final return value once the scan completes (a box shown
-//     live from one tile can still get dropped by dedup once a later,
-//     higher-confidence tile finds the same box again).
-//   - signal: an AbortSignal that stops the scan between tiles (see
-//     cancelScanBtn / clearSession()). Passed through to each tile's fetch
-//     so an already-in-flight request is actually cancelled too, freeing
-//     the backend's job queue rather than letting it run to completion for
-//     a result nobody wants. Checked again right after each tile's await
-//     resolves, in case that tile's response had already fully arrived the
-//     instant abort() was called -- fetch alone can't reject a promise
-//     that's already settled, so that result must be discarded explicitly
-//     instead of reaching onTileFound.
-async function recognizeTiled(x0, y0, w, h, { onProgress, onTileFound, signal } = {}) {
+// Splits the (x0,y0)-(x0+w,y0+h) region of `full` into RapidOCR-sized crops,
+// in full-image coordinates, auto-tiling if the region is large (see
+// PLAN.md, "Tiled scanning for large images"). Shared by the whole-photo
+// "Run OCR" button and per-drawn-box recognition below -- keeping every
+// upload under the backend's hard size limit (OCR_MAX_DIMENSION) either way.
+function tileBoxesFor(x0, y0, w, h) {
   if (w <= 0 || h <= 0) return [];
-
   const tiles = tileGrid(w, h, TILE_SIZE, {
     overlapFrac: TILE_OVERLAP_FRAC,
     singleCellFactor: TILE_SINGLE_CELL_FACTOR,
   });
-  // Only worth drawing when there's an actual grid to see -- a single-tile
-  // region matches its own bounds exactly, nothing to visualize.
-  const showOverlay = tiles.length > 1;
-
-  if (showOverlay) {
-    tileOverlay = tiles.map(([tx0, ty0, tx1, ty1]) => ({
-      box: [x0 + tx0, y0 + ty0, x0 + tx1, y0 + ty1],
-      done: false,
-    }));
-    redrawCanvas();
-  }
-
-  // Sequential, not Promise.all across tiles: a large region can produce
-  // many tiles, and the backend's job queue is bounded (OCR_QUEUE_MAXSIZE)
-  // -- firing them all at once would just 503 most of them instead of
-  // letting the single worker queue work through them.
-  let allFound = [];
-  try {
-    for (let i = 0; i < tiles.length; i++) {
-      const tileFound = await recognizeTile(x0, y0, tiles[i], signal);
-      if (signal?.aborted) throw new DOMException("Scan cancelled", "AbortError");
-      allFound = allFound.concat(tileFound);
-      if (onTileFound) onTileFound(tileFound);
-      if (showOverlay) {
-        tileOverlay[i].done = true;
-        redrawCanvas();
-      }
-      if (onProgress) onProgress(i + 1, tiles.length);
-    }
-  } finally {
-    // Clear even on failure -- an error partway through a scan shouldn't
-    // leave a stale tile grid drawn over the photo indefinitely.
-    if (showOverlay) {
-      tileOverlay = [];
-      redrawCanvas();
-    }
-  }
-
-  // Overlapping tiles often detect the same complete box twice; a region
-  // that wasn't split has nothing to dedupe against itself.
-  return tiles.length > 1 ? selectNonOverlapping(allFound) : allFound;
+  return tiles.map(([tx0, ty0, tx1, ty1]) => [x0 + tx0, y0 + ty0, x0 + tx1, y0 + ty1]);
 }
 
-runOcrBtn.addEventListener("click", async () => {
+runOcrBtn.addEventListener("click", () => {
   if (!full) return;
-  setStatusMessage("Running OCR…");
-  runOcrBtn.disabled = true;
-  scanAbortController = new AbortController();
-  updateButtons(); // picks up scanAbortController -- disables rotation, enables Cancel scan
-  // Only the auto-detected layer gets refreshed — boxes you drew or
-  // recognized by hand (source "manual") survive a re-scan. Cleared up
-  // front (rather than only at the end) so the live per-tile updates below
-  // start from an empty auto layer instead of briefly showing stale boxes
-  // alongside newly-arriving ones.
-  const manualDetections = detections.filter((d) => d.source === "manual");
-  detections = [...manualDetections];
-  redraw();
-  let foundSoFar = 0; // tracked separately from `detections` -- Clear can reset that out from under a cancelled scan
-  try {
-    const found = await recognizeTiled(0, 0, full.width, full.height, {
-      signal: scanAbortController.signal,
-      onProgress: (done, total) => {
-        if (total > 1) setStatusMessage(`Scanning tile ${done}/${total}…`);
-      },
-      // Show each tile's boxes as soon as they arrive rather than waiting
-      // for the whole scan to finish -- provisional, reconciled below once
-      // recognizeTiled resolves with the final deduped set.
-      onTileFound: (tileFound) => {
-        const newDetections = tileFound.map((d) => ({ id: nextId++, ...d, source: "auto" }));
-        foundSoFar += newDetections.length;
-        detections = [...detections, ...newDetections];
-        redraw();
-      },
-    });
-    // Reconcile: replace the provisional auto layer with the final,
-    // deduped set (some boxes shown live above may have been superseded).
-    const autoDetections = found.map((d) => ({ id: nextId++, ...d, source: "auto" }));
-    detections = [...manualDetections, ...autoDetections];
-    selectedId = null;
-    redraw();
-    setStatusMessage(`Found ${autoDetections.length} box(es) (${manualDetections.length} manual box(es) kept)`);
-  } catch (err) {
-    // img null means Clear ran mid-scan and already replaced this status
-    // with its own clean state -- don't resurrect a stale scan message
-    // over it. Boxes found before cancelling are left in place either way
-    // (kept on a plain Cancel, discarded along with everything else by
-    // Clear's own reset).
-    if (img) {
-      setStatusMessage(
-        err.name === "AbortError"
-          ? `Scan cancelled (kept ${foundSoFar} box(es) found before cancelling)`
-          : `OCR failed: ${err.message}`,
-      );
-    }
-  } finally {
-    runOcrBtn.disabled = false;
-    scanAbortController = null;
-    updateButtons();
+  for (const box of tileBoxesFor(0, 0, full.width, full.height)) {
+    scanQueue.push({ box, kind: "auto" });
+    tileOverlay.push({ box, done: false });
   }
+  redrawCanvas();
+  ensureWorkerRunning();
 });
 
 cancelScanBtn.addEventListener("click", () => {
@@ -1065,79 +1009,181 @@ function marginFor(bounds) {
 
 // A drawn box is really just "a region to scan" — it may hold one label
 // (the common case) or several (a looser region covering a cluttered/tiny-
-// label area). Crop it (with a small margin, letting the detector find the
-// tight text region itself) and run it through recognizeTiled.
-async function recognizeRegion(placeholder, signal) {
-  const bounds = boundsOf(placeholder.box);
-  const margin = marginFor(bounds);
-  const x0 = Math.max(0, Math.floor(bounds.minX - margin));
-  const y0 = Math.max(0, Math.floor(bounds.minY - margin));
-  const x1 = Math.min(full.width, Math.ceil(bounds.maxX + margin));
-  const y1 = Math.min(full.height, Math.ceil(bounds.maxY + margin));
-  const w = x1 - x0;
-  const h = y1 - y0;
-  const gotUpscaleBoost = Math.min(w, h) < RAPIDOCR_UPSCALE_SHORT_SIDE;
-
-  const found = await recognizeTiled(x0, y0, w, h, { signal });
-  const newDetections = found.map((d) => ({ id: nextId++, ...d, source: "manual" }));
-  return { placeholder, found: newDetections, gotUpscaleBoost };
-}
-
-async function recognizePendingBoxes() {
-  const pending = detections.filter((d) => d.score == null && !d.attempted);
+// label area), so it's tiled the same way the whole photo is. Each pending
+// (undrawn-yet-recognized) box gets its own placeholder bookkeeping entry
+// so its tile(s) can be reassembled once they've all reported back.
+function recognizePendingBoxes() {
+  // Excludes placeholders already in pendingPlaceholders -- otherwise
+  // clicking this again before an earlier click's tile(s) for the same box
+  // finish would overwrite that box's live bookkeeping entry with a fresh
+  // one, orphaning the earlier tile(s) still in scanQueue: when one of
+  // those arrives, pendingPlaceholders.get() returns whatever the *second*
+  // click set (or, worse, undefined once that already finished and deleted
+  // itself), throwing partway through the drain loop.
+  const pending = detections.filter(
+    (d) => d.score == null && !d.attempted && !pendingPlaceholders.has(d.id),
+  );
   if (pending.length === 0) return;
 
-  setStatusMessage(`Recognizing ${pending.length} region(s)…`);
-  recognizePendingBtn.disabled = true;
-  scanAbortController = new AbortController();
-  updateButtons(); // picks up scanAbortController -- disables rotation, enables Cancel scan
-  try {
-    const signal = scanAbortController.signal;
-    const results = await Promise.all(pending.map((p) => recognizeRegion(p, signal)));
+  for (const placeholder of pending) {
+    const bounds = boundsOf(placeholder.box);
+    const margin = marginFor(bounds);
+    const x0 = Math.max(0, Math.floor(bounds.minX - margin));
+    const y0 = Math.max(0, Math.floor(bounds.minY - margin));
+    const x1 = Math.min(full.width, Math.ceil(bounds.maxX + margin));
+    const y1 = Math.min(full.height, Math.ceil(bounds.maxY + margin));
+    const w = x1 - x0;
+    const h = y1 - y0;
+    const gotUpscaleBoost = Math.min(w, h) < RAPIDOCR_UPSCALE_SHORT_SIDE;
 
-    let foundCount = 0;
-    let emptyCount = 0;
-    let noBoostCount = 0;
-    for (const { placeholder, found, gotUpscaleBoost } of results) {
-      if (!gotUpscaleBoost) noBoostCount++;
-      if (found.length === 0) {
-        placeholder.attempted = true; // stays visible, marked "no text found"
-        emptyCount++;
+    const boxes = tileBoxesFor(x0, y0, w, h);
+    if (boxes.length === 0) continue; // degenerate (zero-area) region -- nothing to scan
+    pendingPlaceholders.set(placeholder.id, { placeholder, remaining: boxes.length, found: [], gotUpscaleBoost });
+    for (const box of boxes) {
+      scanQueue.push({ box, kind: "manual", placeholderId: placeholder.id });
+      tileOverlay.push({ box, done: false });
+    }
+  }
+  redrawCanvas();
+  ensureWorkerRunning();
+}
+recognizePendingBtn.addEventListener("click", recognizePendingBoxes);
+
+// Drains scanQueue one tile at a time -- sequential, not parallel, since the
+// backend's own job queue is bounded (OCR_QUEUE_MAXSIZE) and firing many
+// requests at once would just 503 most of them instead of letting its
+// single worker work through them. runOcrBtn's handler and
+// recognizePendingBoxes() both just push onto the queue and call this; if a
+// drain is already running this is a no-op, since the loop below picks up
+// newly-pushed items on its next iteration -- that's what lets new boxes be
+// added mid-scan instead of the two kinds of scan having to lock each other
+// out.
+//
+// Deliberately doesn't auto-dedupe overlapping tiles' results the way a
+// prior version of this code did per-call: a whole-photo scan and a
+// drawn-box scan both commonly produce the same label detected twice near a
+// tile seam, and rather than silently resolving that here, it's left to the
+// existing manual "Prune overlapping" button -- one dedup path instead of
+// two, and the raw per-tile results stay inspectable before anything's
+// merged. The completion message below nudges toward that button when it
+// looks like there's cleanup to do.
+async function ensureWorkerRunning() {
+  if (scanAbortController) return;
+  scanAbortController = new AbortController();
+  const signal = scanAbortController.signal;
+  updateButtons();
+
+  let autoFoundCount = 0;
+  let manualFoundCount = 0;
+  let manualRegionCount = 0;
+  let manualEmptyCount = 0;
+  let manualNoBoostCount = 0;
+  let errorCount = 0;
+
+  // Cleanup (queue/overlay/controller reset, status message) lives in
+  // finally so it always runs -- an unexpected throw here must not leave
+  // scanAbortController stuck non-null, which would silently wedge every
+  // future scan (ensureWorkerRunning() would early-return forever) with no
+  // way to recover short of a page reload.
+  try {
+    while (scanQueue.length > 0) {
+      if (signal.aborted) break;
+      const item = scanQueue.shift();
+      setStatusMessage(`Scanning… ${scanQueue.length} tile(s) queued`);
+
+      let found;
+      try {
+        found = await recognizeTile(item.box, signal);
+      } catch (err) {
+        if (err.name === "AbortError" || signal.aborted) break;
+        // A genuine per-tile failure (network blip, etc.) is treated like a
+        // tile that found nothing, rather than losing this item's placeholder
+        // bookkeeping or aborting every other queued item over one bad tile.
+        found = [];
+        errorCount++;
+      }
+      if (signal.aborted) break; // discard a result that arrived the instant abort() landed
+
+      const overlayEntry = tileOverlay.find((t) => t.box === item.box);
+      if (overlayEntry) overlayEntry.done = true;
+      redrawCanvas();
+
+      if (item.kind === "auto") {
+        const newDetections = found.map((d) => ({ id: nextId++, ...d, source: "auto" }));
+        autoFoundCount += newDetections.length;
+        detections = [...detections, ...newDetections];
+        redraw();
         continue;
       }
-      foundCount += found.length;
-      const idx = detections.indexOf(placeholder);
-      if (idx >= 0) detections.splice(idx, 1, ...found);
-    }
-    // A replaced placeholder's id no longer exists — drop a now-dangling selection.
-    if (selectedId != null && !detections.some((d) => d.id === selectedId)) selectedId = null;
 
-    const parts = [];
-    if (foundCount > 0) parts.push(`found ${foundCount} box(es) from ${pending.length} region(s)`);
-    if (emptyCount > 0) parts.push(`${emptyCount} region(s) found no text`);
-    if (noBoostCount > 0) {
-      parts.push(
-        `${noBoostCount} region(s) shortest side ≥${RAPIDOCR_UPSCALE_SHORT_SIDE}px `
-        + "(no scale boost, same as full image scan)",
-      );
-    }
-    setStatusMessage(parts.join("\n"));
-  } catch (err) {
-    // Promise.all rejects as soon as any one region's request does, so a
-    // cancel (or a genuine failure) here drops the whole batch -- placeholders
-    // stay pending ("?"), unlike the whole-photo scan's per-tile partial keep.
-    // img null means Clear ran mid-scan and already replaced this status with
-    // its own clean state -- don't resurrect a stale one over it.
-    if (img) {
-      setStatusMessage(err.name === "AbortError" ? "Recognition cancelled" : `Recognition failed: ${err.message}`);
+      // manual: accumulate until every tile this placeholder produced has
+      // reported back, then splice its results in (or mark it "no text
+      // found" if none of them found anything).
+      const entry = pendingPlaceholders.get(item.placeholderId);
+      entry.found.push(...found);
+      entry.remaining--;
+      if (entry.remaining > 0) continue;
+      pendingPlaceholders.delete(item.placeholderId);
+      manualRegionCount++;
+      if (!entry.gotUpscaleBoost) manualNoBoostCount++;
+      if (entry.found.length === 0) {
+        entry.placeholder.attempted = true; // stays visible, marked "no text found"
+        manualEmptyCount++;
+      } else {
+        const newDetections = entry.found.map((d) => ({ id: nextId++, ...d, source: "manual" }));
+        manualFoundCount += newDetections.length;
+        const idx = detections.indexOf(entry.placeholder);
+        if (idx >= 0) detections.splice(idx, 1, ...newDetections);
+        if (selectedId != null && !detections.some((d) => d.id === selectedId)) selectedId = null;
+      }
+      redraw();
     }
   } finally {
+    const cancelled = signal.aborted;
+    const leftoverCount = scanQueue.length;
+    scanQueue = [];
+    // A cancelled region keeps whatever tiles it did get back before the
+    // cancel landed (consistent with the auto layer's own partial-keep above)
+    // rather than discarding real results just because the region as a whole
+    // wasn't fully done.
+    for (const entry of pendingPlaceholders.values()) {
+      if (entry.found.length === 0) continue;
+      const newDetections = entry.found.map((d) => ({ id: nextId++, ...d, source: "manual" }));
+      const idx = detections.indexOf(entry.placeholder);
+      if (idx >= 0) detections.splice(idx, 1, ...newDetections);
+    }
+    pendingPlaceholders.clear();
+    tileOverlay = [];
     scanAbortController = null;
+
+    // img null means Clear ran mid-scan and already replaced this status with
+    // its own clean state; suppressScanSummary means clearDetections() did
+    // (img stays set there, so that check alone wouldn't catch this case) --
+    // either way, don't resurrect a stale scan message over it.
+    if (img && !suppressScanSummary) {
+      const parts = [];
+      if (autoFoundCount > 0) parts.push(`found ${autoFoundCount} box(es) from the full photo`);
+      if (manualRegionCount > 0) {
+        parts.push(`found ${manualFoundCount} box(es) from ${manualRegionCount} drawn region(s)`);
+      }
+      if (manualEmptyCount > 0) parts.push(`${manualEmptyCount} region(s) found no text`);
+      if (manualNoBoostCount > 0) {
+        parts.push(
+          `${manualNoBoostCount} region(s) shortest side ≥${RAPIDOCR_UPSCALE_SHORT_SIDE}px `
+          + "(no scale boost, same as full image scan)",
+        );
+      }
+      if (errorCount > 0) parts.push(`${errorCount} tile(s) failed`);
+      if (cancelled) parts.push(`cancelled${leftoverCount > 0 ? ` (${leftoverCount} tile(s) left unscanned)` : ""}`);
+      const overlapCount = computeOverlapWarnings().size;
+      if (overlapCount > 0) parts.push(`${overlapCount} box(es) overlap — Prune overlapping to clean up`);
+      setStatusMessage(parts.length > 0 ? parts.join("\n") : "Scan complete, nothing found");
+    }
+    suppressScanSummary = false;
     updateButtons();
     redraw();
   }
 }
-recognizePendingBtn.addEventListener("click", recognizePendingBoxes);
 
 const MAX_THUMB_HEIGHT = 36; // display px
 

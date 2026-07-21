@@ -32,7 +32,9 @@
     flex: 0 0 280px; width: 280px; max-height: 650px; overflow-y: auto;
     border: 1px solid #ccc; border-radius: 6px; padding: 0.5rem;
   }
-  #resultsPanel h2 { margin: 0 0 0.5rem; font-size: 1rem; }
+  #resultsHeader { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+  #resultsHeader h2 { margin: 0; font-size: 1rem; }
+  #clearBoxes { font-size: 0.8rem; padding: 0.15rem 0.5rem; }
   #results { list-style: none; margin: 0; padding: 0; font-family: monospace; font-size: 0.85rem; }
   .result-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0; border-bottom: 1px solid #eee; }
   .result-thumb { max-height: 36px; max-width: 90px; border: 1px solid #ccc; background: #fff; flex-shrink: 0; }
@@ -101,7 +103,10 @@
   <div id="workspace">
     <canvas id="stage"></canvas>
     <div id="resultsPanel">
-      <h2>Boxes</h2>
+      <div id="resultsHeader">
+        <h2>Boxes</h2>
+        <button id="clearBoxes" disabled>Clear boxes</button>
+      </div>
       <ul id="results"></ul>
     </div>
   </div>

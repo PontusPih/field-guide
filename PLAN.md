@@ -390,38 +390,75 @@ would hit the ~700MB ceiling directly. Implemented (`ocr.js`, `geometry.js`,
       (`runOcrBtn`'s handler and `recognizePendingBoxes()`), factored into
       `updateButtons()`'s rotate-button disabled state, plus a defensive check directly
       in `rotate()` for any non-button caller.
-- [x] "Clear scan" doesn't cancel an in-flight tiled scan: `recognizeTiled`'s sequential
-      per-tile loop kept awaiting/sending remaining tiles after the user cleared, and
-      whatever came back still got applied (or at least kept occupying the backend's job
-      queue) regardless. Fixed with a shared `scanAbortController`, non-null for the
-      duration of any scan (whole-photo or per-region): passed as `signal` into every
-      tile's `fetch` (actually cancels an in-flight request, freeing the backend's job
-      queue slot) and rechecked right after each tile's `await` resolves, since an
+- [x] "Clear scan" doesn't cancel an in-flight tiled scan: the old `recognizeTiled`'s
+      sequential per-tile loop kept awaiting/sending remaining tiles after the user
+      cleared, and whatever came back still got applied (or at least kept occupying the
+      backend's job queue) regardless. Fixed with a shared `scanAbortController`,
+      non-null for the duration of any scan: passed as `signal` into every tile's
+      `fetch` (actually cancels an in-flight request, freeing the backend's job queue
+      slot) and rechecked right after each tile's `await` resolves, since an
       already-settled fetch can't retroactively be un-resolved by a later `abort()` —
-      that result is discarded instead of reaching `onTileFound`. `clearSession()` and
-      loading a new photo both call `.abort()` before proceeding. A new "Cancel scan"
-      button does the same without the rest of Clear's reset, keeping whatever boxes
-      the scan already found. The whole-photo scan keeps its partial results on cancel;
-      `recognizePendingBoxes()`'s `Promise.all` over per-region requests drops the whole
-      batch on cancel instead (placeholders revert to pending) since `Promise.all`
-      rejects as soon as any one region does.
-      **Interim decision, open for revisit:** `runOcrBtn` and `recognizePendingBtn` are
-      now mutually exclusive (each disabled while the other's scan is in flight) — both
-      share the single `scanAbortController` slot, and letting a second scan start would
-      silently orphan whichever one started first (Cancel/Clear would only reach the
-      newer one). This preempts the "shared queue for tiles and new boxes" feature
-      floated alongside this fix — worth a proper design pass (queue instead of lockout,
-      or merging a newly-drawn box into an already-running whole-photo scan's tile list)
-      rather than living with plain mutual exclusion long-term.
-- [ ] Too easy to click "Run OCR" and lose work: it replaces the whole auto-detected
-      layer on every click (`source === "manual"` boxes survive, but anything done to
-      auto-detected ones — deleted an incorrect box, moved/resized one to be more
-      accurate — gets wiped and regenerated fresh, since only literal `source ===
-      "manual"` is preserved). Add a `confirm()` dialog before running if there's
-      something at risk (matching the existing pattern `clearSession()` already uses,
-      "Clear the loaded photo and all boxes?") — manual boxes present, and/or evidence
-      auto-detected boxes have been deleted since the last scan. Not yet designed in
-      detail (deciding how to detect "deleted since last scan" specifically).
+      that result is discarded instead of being applied. `clearSession()` and loading a
+      new photo both call `.abort()` before proceeding. A new "Cancel scan" button does
+      the same without the rest of Clear's reset, keeping whatever boxes the scan
+      already found.
+      Landed together with a follow-on refactor (**shared queue for tiles and new
+      boxes**, floated alongside this fix): a whole-photo "Run OCR" is just a region
+      that happens to cover the full image, and a drawn box is a smaller region — both
+      are now reduced at click time to the same thing, a flat `scanQueue` of
+      already-tile-sized crops in full-image coordinates, drained by one
+      `ensureWorkerRunning()` worker loop. This replaced the old
+      `recognizeTile`/`recognizeTiled` pair (region-local tiling done fresh inside each
+      call, with a provisional-then-reconciled result and per-call cross-tile dedup) and
+      resolved the interim mutual-exclusion this fix first shipped with: `runOcrBtn` and
+      `recognizePendingBtn` no longer lock each other out, since both just push onto the
+      same queue and (re)start the worker — clicking either while a scan is already
+      running adds more work to it instead of being blocked, including drawing and
+      recognizing new boxes while a whole-photo scan is still going.
+      **Dedup is now a manual step, not automatic.** The old per-call
+      `selectNonOverlapping` cross-tile dedup is gone; overlapping tiles' duplicate
+      detections are left for the existing "Prune overlapping" button — one dedup path
+      instead of two, and the raw per-tile results stay inspectable before anything's
+      merged (explicit tradeoff, chosen over auto-dedup for visibility/control). The
+      scan-complete status message nudges toward that button when
+      `computeOverlapWarnings()` finds anything to clean up.
+      **Also resolved as a side effect:** the separate "too easy to click Run OCR and
+      lose work" bug below — Run OCR no longer wipes-then-refills the auto-detected
+      layer on every click (that whole provisional/reconcile mechanism is gone), so nothing
+      gets silently destroyed by a re-scan; old and new auto boxes coexist until pruned.
+- [x] ~~Too easy to click "Run OCR" and lose work~~ — see above; superseded by the
+      shared-queue refactor rather than fixed with the originally-proposed `confirm()`
+      dialog.
+- [x] **"Clear boxes" button**, top right of the results list header (next to "Boxes").
+      Narrower than the existing "Clear" button: drops every box (`clearDetections()`)
+      but keeps the loaded photo, so re-drawing/re-scanning doesn't need reloading the
+      file first. Cancels an in-flight scan the same way `clearSession()` does; since it
+      (unlike `clearSession()`) leaves `img` set, a `suppressScanSummary` flag tells
+      `ensureWorkerRunning()`'s completion handler to skip its own status message this
+      one time, so a scan's summary can't get posted over the just-emptied list.
+- [ ] **Dedup checks text before pruning.** `pruneOverlapping()`/`selectNonOverlapping`
+      (geometry.js) currently judge duplicates by spatial overlap alone (bounding-box
+      area + score), blind to the recognized text. Two boxes that overlap but hold
+      different text are more likely two distinct nearby labels than one label read
+      twice, and pruning on overlap alone risks silently discarding the wrong one.
+      Worth factoring text similarity into the keep/drop decision (e.g. only treat an
+      overlapping pair as a true duplicate if their text also matches or is a close
+      fuzzy match) rather than pure geometry. Not yet designed in detail.
+- [ ] **Order the results list by closeness/overlap, or by scan order.** `renderResultsList()`
+      currently just walks `detections` in array order (insertion order — whichever
+      order tiles/regions happened to report back). With dedup now a manual step (see
+      above), overlapping/duplicate entries are more visible in the list than before;
+      grouping or sorting spatially-close/overlapping boxes next to each other (or at
+      least keeping them in a stable, predictable order — e.g. scan order, or grid
+      position) would make it easier to spot and compare them before pruning. Not yet
+      designed in detail (worth deciding against the closeness-grouping idea vs. a
+      simpler fixed sort key first).
+- [ ] **Move "Prune overlapping" and "Prune empty" next to "Clear boxes."** Both act on
+      the results list the same way "Clear boxes" does, so they belong in
+      `#resultsHeader` (ocr.html) alongside it rather than in the top `#controls` row.
+      Three buttons side by side there is tight — needs shorter labels and/or icons
+      (e.g. an overlap glyph, an empty-box glyph) to keep the header compact
+      horizontally. Not yet designed in detail (wording/iconography undecided).
 
 **Benchmarks**
 Raw data behind the design above, kept for reference. All measured on this dev
