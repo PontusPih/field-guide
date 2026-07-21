@@ -1,24 +1,18 @@
 "use strict";
 
-// Resolves which OCR backend ocr.js should talk to, without any build step
-// or checked-in per-environment file (this repo has neither -- see
-// PLAN.md). Two mechanisms, checked in order:
+// Resolves which OCR backend ocr.js talks to, with no build step or
+// per-environment file. Two mechanisms, checked in order:
 //
-//   1. A saved override in localStorage (key: BACKEND_URL_STORAGE_KEY) --
-//      set it from the browser console, e.g.
-//      `localStorage.setItem("fieldGuideBackendUrl", "https://staging.example.com")`,
-//      to point at any backend (a staging deploy, someone else's local
-//      instance, ...) without editing source. Clear it to fall back to
-//      auto-detection: `localStorage.removeItem("fieldGuideBackendUrl")`.
-//   2. Hostname-based auto-detect -- `localhost`/`127.0.0.1` (i.e. running
-//      via `python3 -m http.server`, see README.md) default to the local
-//      backend; anything else (the real GitHub Pages host) defaults to
-//      production. This is the "dev vs prod" switch: no manual edit needed
-//      to go either direction.
+//   1. A saved override in localStorage (key: BACKEND_URL_STORAGE_KEY), set
+//      from the browser console to point at any backend without editing
+//      source:
+//      `localStorage.setItem("fieldGuideBackendUrl", "https://staging.example.com")`.
+//      Remove the key to fall back to auto-detection.
+//   2. Hostname-based auto-detect: a localhost name gets the dev backend,
+//      anything else gets prod.
 //
-// Kept pure and DOM-free (localStorage/location are read by the caller and
-// passed in) so the resolution logic itself is unit-testable, matching
-// geometry.js's pattern.
+// Pure and DOM-free -- localStorage/location are read by the caller and
+// passed in -- so the resolution logic is unit-testable, as in geometry.js.
 
 const LOCALHOST_NAMES = ["localhost", "127.0.0.1"];
 const DEFAULT_DEV_BACKEND_URL = "http://localhost:8642";

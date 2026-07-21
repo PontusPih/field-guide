@@ -1,9 +1,8 @@
 "use strict";
 
 // Field guide app — DOM + fetch. All parsing/lookup logic lives in core.js.
-// The input box's contents are remembered across navigation (see
-// REMEMBERED_INPUT_KEY below), so this stays useful after a detour to Scan
-// or the landing page rather than resetting to the sample list.
+// The input box's contents survive navigation (see REMEMBERED_INPUT_KEY
+// below) rather than resetting to the sample list.
 
 import { parseGuide, resolve, group, systemHints, busLabel, buildExport } from "./core.js";
 
@@ -12,10 +11,8 @@ const GUIDE_URL = "field-guide-02.txt";
 // Numbers handed off from ocr.js's "Handoff to identify" button land here.
 const SCAN_HANDOFF_KEY = "fieldGuideScan";
 
-// Remembers what's in the input box across navigation (or closing the tab
-// entirely) so leaving Identify and coming back — e.g. via the Scan
-// shortcut — doesn't lose your list. Plain text, so localStorage (unlike
-// ocr.js's IndexedDB use for the scan photo) is more than enough.
+// Remembers the input box across navigation and tab closes. Plain text, so
+// localStorage suffices (unlike ocr.js's IndexedDB use for the scan photo).
 const REMEMBERED_INPUT_KEY = "fieldGuideIdentifyInput";
 
 // A demo stack showing the main cases:
@@ -68,13 +65,12 @@ function appendBoardRows(card, boards) {
   }
 }
 
-// One option can render as two cards: the primary listing (complete sets, or
-// today's familiar x/y-present partial when no full set can be assembled yet)
-// and, only when duplicate boards are left over after forming g.fullSets
-// complete sets, a second "leftover" card — shaped exactly like a normal
-// partial option, since from here it just IS one: the boards that didn't
-// make it into a complete set, some present (surplus copies) and some
-// "missing" (fully used up by the complete sets already pulled out).
+// One option renders as one or two cards: the primary listing (complete
+// sets, or an x/y-present partial when no full set can be assembled), plus —
+// only when duplicate boards remain after forming g.fullSets complete sets —
+// a "leftover" card. The leftover is shaped like a partial option: boards
+// that didn't make a complete set, some present (surplus copies) and some
+// "missing" (used up by the complete sets already pulled out).
 function appendOptionCards(out, name, g) {
   const card = el("div", "option");
   const badge = g.knownBases.length > 1
@@ -194,13 +190,10 @@ function runExport() {
 
 // --- boot ---------------------------------------------------------------
 
-// A scan handed off from ocr.js wins first (consumed once — removed so a
-// later plain visit doesn't keep reusing it); otherwise fall back to
-// whatever was last remembered, then finally the built-in sample. Whichever
-// wins is also what gets remembered, so a first-ever visit (sample) and a
-// scan handoff both become "the remembered state" for next time too.
-// Explicit null checks (not ||): a remembered value of "" — the Clear button
-// — must stay empty, not fall through to the sample like a falsy "" would.
+// A scan handed off from ocr.js wins first, consumed once; otherwise the
+// last remembered input, then the built-in sample. Whichever wins is also
+// what gets remembered. Explicit null checks, not ||: a remembered "" (the
+// Clear button) must stay empty rather than falling through to the sample.
 const inputEl = document.getElementById("input");
 const handoff = sessionStorage.getItem(SCAN_HANDOFF_KEY);
 if (handoff != null) sessionStorage.removeItem(SCAN_HANDOFF_KEY);

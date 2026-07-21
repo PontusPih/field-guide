@@ -1,28 +1,24 @@
 "use strict";
 
-// Scan tool frontend. Load a photo, rotate in 90-degree steps, pan/zoom to
-// inspect it, run OCR against the backend, and edit the resulting boxes
-// (select + delete; draw new ones), then hand the recognized module numbers
-// off to guide.js. Coordinate transforms and hit-testing live in
-// geometry.js as pure functions so they're unit-testable. The loaded image
-// and its boxes are remembered in IndexedDB (see "session persistence"
-// below) so navigating away and back — or reopening the tab later — picks
-// up right where you left off.
+// Scan tool frontend. Load a photo, rotate in 90-degree steps, pan/zoom,
+// run OCR against the backend, edit the resulting boxes (select, delete,
+// draw new ones), then hand the recognized module numbers to guide.js.
+// Coordinate transforms and hit-testing live in geometry.js as pure,
+// DOM-free functions. The loaded image and its boxes persist in IndexedDB
+// (see "session persistence" below), so reopening the page restores them.
 //
-// Gesture model (chosen after trying a couple of alternatives):
+// Gesture model:
 //   - plain left-drag on empty canvas  -> draw a new box
 //   - click (no real drag) on a box    -> select it (again to deselect)
 //   - Ctrl+left-drag, or two-finger
 //     scroll (wheel without ctrlKey)   -> pan
 //   - pinch (wheel WITH ctrlKey)       -> zoom, anchored at the cursor
 //   - Delete/Backspace                 -> remove the selected box
-// Newly-drawn boxes are stored with text/score = null ("pending") until
-// "Recognize new boxes" is run: rather than a dedicated recognition-only
-// backend call, each pending box is cropped (with a small margin) and sent
-// through the same /ocr endpoint used for full images — letting RapidOCR's
-// own detector re-find the tight text region inside the crop measurably
-// improves accuracy over skipping detection entirely (0.98 vs 0.89 score on
-// the same label, tested directly against the backend during development).
+//
+// Newly-drawn boxes hold text/score = null ("pending") until "Recognize new
+// boxes" runs: each is cropped with a small margin and sent through the same
+// /ocr endpoint used for full images, so RapidOCR's own detector re-finds the
+// tight text region inside the crop.
 
 import {
   toSource, toDisplay, hitTestBoxes, distance, nearestWithinRadius, pointInPolygon,
@@ -30,11 +26,9 @@ import {
 } from "./geometry.js";
 import { resolveBackendUrl, BACKEND_URL_STORAGE_KEY, LOCALHOST_NAMES } from "./backend-config.js";
 
-// Same dev/prod signal backend-config.js uses for BACKEND_URL: Render's
-// 512MB-driven limits (tile size here, OCR_MAX_DIMENSION server-side) don't
-// apply to a local dev machine with real memory headroom, so localhost gets
-// the fast/permissive defaults automatically -- see IS_LOCAL_DEV below and
-// backend/README.md for the matching OCR_MAX_DIMENSION=0 server-side flag.
+// Dev/prod switch, the same signal backend-config.js uses for BACKEND_URL.
+// Dev skips the size limits a memory-constrained prod backend needs -- see
+// TILE_SIZE below, and OCR_MAX_DIMENSION server-side.
 const IS_LOCAL_DEV = LOCALHOST_NAMES.includes(location.hostname);
 
 const fileInput = document.getElementById("file");
@@ -54,13 +48,10 @@ const goToGuideBtn = document.getElementById("goToGuide");
 const statusEl = document.getElementById("status");
 const resultsEl = document.getElementById("results");
 
-// The OCR backend only runs in Python (can't stay client-side like the rest
-// of the app), so it's a separate origin from this static page. Hosted on
-// Render (see PLAN.md, Phase 2b); backend/server.py sends the CORS headers
-// this cross-origin fetch needs. Which URL that actually is -- local
-// backend during development, production otherwise, or an explicit
-// override -- is resolved by backend-config.js; see there for how to point
-// this at something else (e.g. a staging deploy).
+// The OCR backend runs in Python, so it's a separate origin from this static
+// page; backend/server.py sends the CORS headers the cross-origin fetch
+// needs. Which URL -- dev, prod, or an explicit override -- is resolved by
+// backend-config.js.
 const BACKEND_URL = resolveBackendUrl({
   hostname: location.hostname,
   storedOverride: localStorage.getItem(BACKEND_URL_STORAGE_KEY),
@@ -87,30 +78,17 @@ const RESIZE_HANDLE_HIT_RADIUS = 12; // display px, how close a click must land 
 const RAPIDOCR_UPSCALE_SHORT_SIDE = 736;
 
 // Tiling config for large regions (PLAN.md, "Tiled scanning for large
-// images"). Production TILE_SIZE defaults to RAPIDOCR_UPSCALE_SHORT_SIDE
-// since that's the size det never scales -- going smaller wastes nothing
-// extra (det upscales back up to the floor regardless) but doesn't help
-// either, and benchmarking a larger tile came out strictly worse on both
-// memory *and* wall time (see PLAN.md Benchmarks), not a trade-off. This is
-// the knob to raise if this ever runs on a *production* host with real
-// memory headroom instead of Render's 512MB free tier -- kept separate from
-// RAPIDOCR_UPSCALE_SHORT_SIDE (today numerically identical) since one
-// describes the backend's fixed floor and the other is this client's own
-// tunable choice.
-//
-// Locally, none of that applies: Infinity always fails tileGrid's
-// single-cell-region check, so every scan sends exactly one request
-// covering the whole region -- fastest possible round trip on a dev
-// machine, matching a local server.py run with OCR_MAX_DIMENSION=0 (see
-// backend/README.md) so that single big request doesn't get 413-rejected.
+// images"). TILE_SIZE matches RAPIDOCR_UPSCALE_SHORT_SIDE -- the size det
+// never rescales -- but stays a separate constant: that one describes the
+// backend's fixed floor, this one is the client's tunable choice, raised for
+// a backend with more memory headroom. In dev, Infinity fails tileGrid's
+// single-cell check, so a scan sends one request covering the whole region
+// (pair with OCR_MAX_DIMENSION=0 server-side).
 const TILE_SIZE = IS_LOCAL_DEV ? Infinity : 736;
 const TILE_OVERLAP_FRAC = 0.15;
-// A region only modestly larger than one tile must not be forced into a
-// multi-tile grid -- the overlap needed to avoid missing text at the seam
-// approaches 90%+ at that size (a 800x800 region against a 736 tile), which
-// multiplies request count for no benefit. Must stay comfortably under the
-// backend's own OCR_MAX_DIMENSION gate (default 1200px = 736 * 1.63) or a
-// legitimately single-tile region could get 413-rejected.
+// Regions up to this multiple of TILE_SIZE run as one oversized tile instead
+// of a grid. Must stay under the backend's OCR_MAX_DIMENSION gate (default
+// 1200px = 736 * 1.63) or a single-tile region gets 413-rejected.
 const TILE_SINGLE_CELL_FACTOR = 1.4;
 
 let img = null; // loaded HTMLImageElement, full source resolution
@@ -123,42 +101,30 @@ let minScale = 1;
 let detections = []; // [{ id, box: [[x,y]x4] in source coords, text, score }]
 let nextId = 1;
 
-// A whole-photo "Run OCR" is just a region that happens to cover the full
-// image; a drawn box is a smaller region. Both are reduced to the same
-// thing at enqueue time -- a flat list of already-tile-sized crops, in full
-// image coordinates -- and drained by one worker (see ensureWorkerRunning()
-// below). This is also why per-tile dedup was dropped: overlapping tiles
-// commonly detect the same label twice regardless of which button enqueued
-// them, and rather than silently resolving that automatically (as a prior
-// version of this code did, per-call), it's left for the existing manual
-// "Prune overlapping" button -- one dedup path instead of two, and the user
-// sees (and can inspect) the raw per-tile results before anything is merged.
+// A whole-photo "Run OCR" and a drawn box are both just regions; each is
+// reduced at enqueue time to tile-sized crops in full-image coordinates,
+// drained by one worker (see ensureWorkerRunning() below).
 // [{ box: [x0,y0,x1,y1], kind: "auto" | "manual", placeholderId? }]
 let scanQueue = [];
 // placeholderId -> { placeholder, remaining, found: [], gotUpscaleBoost }.
-// A manual (drawn-box) region may itself need more than one tile (a large
-// drawn box); the placeholder is only spliced out once every tile it
-// produced has reported back -- see ensureWorkerRunning().
+// A manual region may span several tiles; its placeholder is spliced out
+// only once every tile it produced has reported back.
 let pendingPlaceholders = new Map();
 // [{ box: [x0,y0,x1,y1], done }] in source coords, one entry per queued/
 // in-flight/completed tile for the whole current drain -- empty when idle.
 let tileOverlay = [];
-// Non-null while the queue worker is draining -- both the "is a scan
-// running" flag and the means to cancel it (cancelScanBtn / clearSession()
-// / loading a new photo all call .abort() on it). rotate() doesn't remap
-// tileOverlay, so rotating mid-scan would leave the live tile-progress
-// outlines in stale pre-rotation coordinates -- disable rotation instead
-// (see updateButtons()).
+// Non-null while the queue worker is draining -- both the "scan running"
+// flag and the means to cancel it (cancelScanBtn, clearSession(),
+// clearDetections(), and loading a new photo all call .abort()). Rotation is
+// disabled while it's set, since rotate() doesn't remap tileOverlay.
 let scanAbortController = null;
-// Set by clearDetections() when it cancels a scan still in flight -- tells
-// ensureWorkerRunning()'s finally to skip its own completion message this
-// one time, since clearDetections() (unlike clearSession()) keeps `img` set,
-// so the worker's own `if (img)` guard wouldn't otherwise catch this case.
+// One-shot: tells ensureWorkerRunning()'s finally to skip its completion
+// message. Set by clearDetections(), which keeps `img` set and so isn't
+// caught by the worker's own `if (img)` guard.
 let suppressScanSummary = false;
 // Last message passed to setStatusMessage(), or null when idle (bare meta
-// line only). Tracked so updateMeta() -- called on every pan/zoom/rotate to
-// refresh the resolution/zoom% text -- can redraw alongside whatever
-// message is still active instead of silently wiping it.
+// line only). updateMeta() re-renders it, so a pan/zoom/rotate refresh
+// doesn't wipe a message that's still active.
 let lastStatusMessage = null;
 let selectedId = null;
 let draftBox = null; // { x0, y0, x1, y1 } in source coords, while drawing a new box
@@ -175,13 +141,10 @@ let hoverBoxId = null; // id of the box the cursor is currently over (declutter:
 
 // --- session persistence -------------------------------------------------
 // Remembers the loaded image, its rotation, and every box (drawn or
-// recognized) so navigating to guide.html — or closing the tab entirely —
-// and coming back to ocr.html restores exactly where you left off. Uses
-// IndexedDB rather than sessionStorage/localStorage because the image is
-// binary and can be several MB, well past what string-based storage can
-// comfortably hold. The image (rarely rewritten, one put per loaded file)
-// and the box state (small JSON, rewritten after every edit) are separate
-// keys so editing a box doesn't mean re-storing the whole photo.
+// recognized), so returning to ocr.html restores the session. IndexedDB
+// rather than sessionStorage/localStorage: the image is binary and can be
+// several MB. Image and box state live under separate keys, so editing a box
+// doesn't re-store the whole photo.
 const DB_NAME = "field-guide-scan";
 const STORE = "session";
 const IMAGE_KEY = "image";
@@ -225,10 +188,9 @@ async function dbDelete(key) {
   });
 }
 
-// Storing the File directly (not just its bytes) means IndexedDB's
-// structured clone keeps its .name intact — retrieved later via
-// restoreSession() to show what was loaded, since the native file input
-// can't be told to display a filename it didn't itself set.
+// Stores the File itself, not just its bytes: IndexedDB's structured clone
+// keeps .name, which restoreSession() shows (the native file input can't be
+// told to display a filename it didn't set).
 function persistImage(file) {
   dbPut(IMAGE_KEY, file).catch((err) => console.warn("Could not save scan image:", err));
 }
@@ -241,8 +203,7 @@ async function clearSession() {
   if (!img && detections.length === 0) return;
   if (!confirm("Clear the loaded photo and all boxes?")) return;
 
-  // Stop any in-flight scan rather than letting it keep running against a
-  // session that's about to be wiped out from under it (see scanAbortController).
+  // Stop any in-flight scan against the session being wiped.
   if (scanAbortController) scanAbortController.abort();
 
   img = null;
@@ -274,18 +235,14 @@ async function clearSession() {
 clearBtn.addEventListener("click", clearSession);
 
 // Narrower than clearSession(): drops every box (drawn, pending, or
-// recognized) but keeps the loaded photo, so re-drawing/re-scanning doesn't
-// need reloading the file first.
+// recognized) but keeps the loaded photo.
 function clearDetections() {
   if (detections.length === 0) return;
   if (!confirm("Clear all boxes? The loaded photo is kept.")) return;
 
-  // Stop any in-flight scan rather than letting it keep running against a
-  // box list that's about to be wiped out from under it (see clearSession()).
-  // Unlike clearSession(), img stays set here, so ensureWorkerRunning()'s own
-  // `if (img)` guard won't stop it from posting a stale completion summary
-  // over this now-empty list once the abort lands -- suppressScanSummary
-  // tells it to skip that message this one time instead.
+  // Stop any in-flight scan against the box list being wiped. `img` stays
+  // set here, so suppressScanSummary is what keeps the worker from posting a
+  // completion summary over the now-empty list.
   if (scanAbortController) {
     suppressScanSummary = true;
     scanAbortController.abort();
@@ -299,7 +256,7 @@ function clearDetections() {
   hoverBoxId = null;
   lastStatusMessage = null; // don't let a stale message survive the clear
 
-  updateMeta(); // actually blanks the status line -- lastStatusMessage alone doesn't re-render it
+  updateMeta(); // re-renders the (now blank) status line
   updateButtons();
   redraw();
 }
@@ -317,13 +274,10 @@ function rotatedCanvas(image, rotationDeg) {
   return c;
 }
 
-// The canvas box is a fixed size regardless of the loaded image's aspect
-// ratio. When the rendered image doesn't fill an axis (e.g. "fit" zoom on
-// an image whose aspect ratio differs from the canvas's), that axis gets a
-// centered letterbox offset instead of the image being pinned to the
-// canvas's top-left corner with the excess canvas space left blank.
-// toSource()/toDisplay() (geometry.js) read view.offsetX/offsetY, so this
-// must be recomputed any time view.scale changes.
+// Letterbox offset centering the rendered image on any axis it doesn't fill
+// (e.g. "fit" zoom on an image whose aspect ratio differs from the
+// canvas's). toSource()/toDisplay() (geometry.js) read view.offsetX/offsetY,
+// so this must be recomputed any time view.scale changes.
 function updateViewOffsets() {
   const renderedW = full.width * view.scale;
   const renderedH = full.height * view.scale;
@@ -348,21 +302,18 @@ function resetView({ preserveDetections = false } = {}) {
   redraw();
 }
 
-// Info-line text: filename (if known) before the resolution, so it reads as
-// "what this is, then its details" — shared by updateMeta() (the idle line)
-// and setStatusMessage() (which prepends this same line to a status message).
+// Info-line text: filename (if known), resolution, rotation, zoom. Shared by
+// updateMeta() and setStatusMessage(), which prepends it to a message.
 function metaLine() {
   if (!full) return "";
   const name = fileName ? `${fileName} · ` : "";
   return `${name}${full.width}×${full.height}px · rotation ${rotation}° · zoom ${Math.round(view.scale * 100)}%`;
 }
 
-// Refreshes the meta portion (resolution/rotation/zoom%) of the status
-// line -- called on every pan/zoom/rotate. Re-renders through
-// setStatusMessage() when a message is still active (lastStatusMessage) so
-// that message survives the refresh instead of being overwritten by the
-// bare meta line; genuinely idle (no message yet, or explicitly cleared —
-// see clearSession()) falls back to just the meta line.
+// Refreshes the meta portion of the status line, called on every
+// pan/zoom/rotate. Re-renders through setStatusMessage() while a message is
+// active, so the refresh doesn't overwrite it; falls back to the bare meta
+// line when idle.
 function updateMeta() {
   if (lastStatusMessage != null) {
     setStatusMessage(lastStatusMessage);
@@ -410,8 +361,7 @@ function strokeBoxPath(box) {
   ctx.closePath();
 }
 
-// Canvas hover label: text only, no score — the score is still available in
-// the results list, which is the place for full detail.
+// Canvas hover label: text only. The score shows in the results list.
 function canvasLabelFor(detection) {
   if (detection.score != null) return detection.text;
   return detection.attempted ? "no text found" : "not yet recognized";
@@ -427,9 +377,8 @@ function drawLabelText(text, color, topLeft) {
   const metrics = ctx.measureText(text);
   const labelHeight = 16;
   const spaceAbove = topLeft.y - 6;
-  // Fallback stays anchored to the box's own position (not a fixed canvas
-  // y) so the label scrolls off-screen together with its box when panning,
-  // instead of appearing pinned to the top edge.
+  // No room above: place the label below the box, still anchored to it so it
+  // pans and scrolls off-screen with it.
   const labelY = spaceAbove >= labelHeight ? spaceAbove : topLeft.y + labelHeight + 4;
   ctx.fillStyle = "rgba(0, 0, 0, 0.65)";
   ctx.fillRect(topLeft.x - 2, labelY - 13, metrics.width + 4, 16);
@@ -437,9 +386,8 @@ function drawLabelText(text, color, topLeft) {
   ctx.fillText(text, topLeft.x, labelY);
 }
 
-// Default view stays uncluttered — just a colored outline plus a small
-// numbered badge. Full text+score only shows for the hovered or selected
-// box; everything is always visible in the results list regardless.
+// Colored outline plus a numbered badge. Full text+score shows only for the
+// hovered or selected box; the results list always shows everything.
 function drawDetection(detection, index) {
   const color = colorFor(detection);
   const isSelected = detection.id === selectedId;
@@ -462,18 +410,15 @@ function drawDetection(detection, index) {
   }
 }
 
-// Delete-X floats just above the box's top-center, in display space (view-
-// dependent, so it tracks pan/zoom correctly) — kept clear of the corners,
-// which are now resize handles.
+// Delete-X floats just above the box's top-center, in display space so it
+// tracks pan/zoom — clear of the corners, which are resize handles.
 function deleteHotspotDisplayPos(detection) {
   const b = boundsOf(detection.box);
   const topCenter = toDisplay({ x: (b.minX + b.maxX) / 2, y: b.minY }, view);
   return { x: topCenter.x, y: topCenter.y - 14 };
 }
 
-// A box's delete-X shows if it's hovered near, OR selected — selecting a
-// box (e.g. via the results list) shouldn't require re-hovering it just to
-// find the delete affordance.
+// A box's delete-X shows when it's hovered near or selected.
 function visibleDeleteHotspotIds() {
   const ids = new Set();
   if (selectedId != null) ids.add(selectedId);
@@ -515,10 +460,9 @@ function drawResizeHandles() {
   }
 }
 
-// Given which corner (see cornersOf) is being dragged to source point `sp`,
-// return the resulting {x0,y0,x1,y1} — the opposite corner stays fixed.
-// normalizedRectBox() (already used for drawing new boxes) handles the
-// min/max swap if the drag crosses over the opposite corner.
+// Given which corner (see cornersOf) is dragged to source point `sp`, the
+// resulting {x0,y0,x1,y1} — the opposite corner stays fixed.
+// normalizedRectBox() handles the min/max swap if the drag crosses over it.
 function resizedBounds(handleIndex, sp, startBounds) {
   const b = startBounds;
   switch (handleIndex) {
@@ -529,9 +473,8 @@ function resizedBounds(handleIndex, sp, startBounds) {
   }
 }
 
-// Editing a box invalidates whatever recognition it had (the region it
-// covers just changed), so treat it as pending again and mark it "manual"
-// so a later Run OCR won't discard the edit.
+// Editing a box invalidates its recognition (the region it covers changed),
+// so it goes back to pending and is marked "manual".
 function applyEditedBox(detection, newBox) {
   detection.box = newBox;
   detection.text = null;
@@ -563,10 +506,9 @@ function drawDeleteHotspot() {
   }
 }
 
-// Tile grid for the current scan queue drain (see ensureWorkerRunning) —
-// dashed while a tile is still queued/in-flight, solid once its result is back.
-// Deliberately a plain outline (no label/color-by-confidence) so it reads
-// as a different kind of thing from the detection boxes drawn over it.
+// Tile grid for the current queue drain (see ensureWorkerRunning) — dashed
+// while a tile is queued/in-flight, solid once its result is back. A plain
+// outline, so it reads differently from the detection boxes drawn over it.
 function drawTileOverlay() {
   for (const t of tileOverlay) {
     const p0 = toDisplay({ x: t.box[0], y: t.box[1] }, view);
@@ -579,19 +521,14 @@ function drawTileOverlay() {
   ctx.setLineDash([]);
 }
 
-// Split from redraw() so hover-only updates (canvas hover, or hovering a row
-// in the results list) can repaint the canvas without rebuilding the whole
-// list DOM underneath the cursor — which would flicker/misfire hover events
-// on the very row being hovered.
+// Canvas-only repaint. Hover updates use this rather than redraw(), which
+// would rebuild the list DOM under the cursor and misfire its hover events.
 function redrawCanvas() {
   if (!full) return;
   ctx.clearRect(0, 0, display.width, display.height);
-  // Clip the sampled source rect to the image's actual bounds — sampling
-  // past them (e.g. at "fit" zoom on an image whose aspect ratio doesn't
-  // match the canvas's) previously left drawImage silently drawing only
-  // the overlap pinned to the canvas's top-left corner. The now-smaller
-  // destination rect is drawn at view.offsetX/offsetY instead, centering
-  // the image in the leftover space on whichever axis doesn't fill it.
+  // Clip the sampled source rect to the image's bounds; the destination rect
+  // is drawn at view.offsetX/offsetY, centering the image in the leftover
+  // space on whichever axis it doesn't fill.
   const visW = Math.min(full.width, display.width / view.scale);
   const visH = Math.min(full.height, display.height / view.scale);
   ctx.drawImage(full, view.x, view.y, visW, visH, view.offsetX, view.offsetY, visW * view.scale, visH * view.scale);
@@ -625,10 +562,9 @@ function normalizedRectBox(b) {
   return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
 }
 
-// Pairs of detections whose bounding rects intersect — most likely
-// duplicate detections of the same physical label from overlapping drawn
-// regions. Keyed by detection id -> the other overlapping boxes' display
-// numbers (1-based), for the list warning.
+// Detections whose bounding rects intersect — likely duplicate reads of the
+// same physical label. Keyed by detection id -> the other overlapping boxes'
+// display numbers (1-based), for the list warning.
 function computeOverlapWarnings() {
   const warnings = new Map();
   for (let i = 0; i < detections.length; i++) {
@@ -644,9 +580,6 @@ function computeOverlapWarnings() {
   return warnings;
 }
 
-// Greedy non-max suppression: process boxes highest-score first, drop any
-// box that overlaps one already kept. Keeps the more-trustworthy box from
-// each overlapping cluster; pending (null-score) boxes rank lowest.
 // Shared cleanup for any bulk removal: drop the ids from `detections` and
 // clear any selection/hover state that would otherwise dangle on a removed id.
 function removeDetections(idsToRemove) {
@@ -665,8 +598,7 @@ function pruneOverlapping() {
 }
 
 // "Empty" = recognition was tried and found nothing (dark-red dashed).
-// Never-tried boxes ("?", gray dashed) are left alone — they're still
-// pending user intent, not a dead end.
+// Never-tried boxes (gray dashed) are left alone.
 function pruneEmpty() {
   const emptyIds = new Set(
     detections.filter((d) => d.score == null && d.attempted).map((d) => d.id),
@@ -677,11 +609,9 @@ function pruneEmpty() {
 function updateButtons() {
   const hasImage = !!img;
   for (const b of [rotateLeftBtn, rotateRightBtn]) b.disabled = !hasImage || !!scanAbortController;
-  // Both buttons below just push tile(s) onto the shared scanQueue and
-  // (re)start the drain worker -- see ensureWorkerRunning() -- so, unlike
-  // an earlier version of this code, neither needs to wait for the other's
-  // scan to finish; clicking either while a scan is already running just
-  // adds more work to the same queue.
+  // Both scan buttons just push onto scanQueue and (re)start the worker (see
+  // ensureWorkerRunning()), so clicking either mid-scan adds to the same
+  // queue rather than being blocked.
   runOcrBtn.disabled = !hasImage;
   cancelScanBtn.disabled = !scanAbortController;
   deleteBtn.disabled = selectedId == null;
@@ -694,9 +624,8 @@ function updateButtons() {
 }
 
 // The canvas's rendered CSS size can differ from its internal pixel buffer
-// (display.width/height) — e.g. the flex layout shrinking it on a narrow
-// window. Scale into internal-pixel space so hit-testing and view math
-// (which assume 1 canvas px per unit) stay correct regardless of render size.
+// (e.g. the flex layout shrinking it on a narrow window). Scales into
+// internal-pixel space, which hit-testing and view math assume.
 function pointerDisplayPos(e) {
   const r = display.getBoundingClientRect();
   const scaleX = display.width / r.width;
@@ -825,8 +754,8 @@ display.addEventListener("pointermove", (e) => {
     selectedDetection().box = normalizedRectBox(bounds);
     redrawCanvas();
   }
-  // "select-candidate": no visual feedback until pointerup, by design —
-  // a click should select before its handles/move-body become draggable.
+  // "select-candidate": no visual feedback until pointerup — a click selects
+  // the box before its handles/body become draggable.
 });
 
 display.addEventListener("pointerup", (e) => {
@@ -927,9 +856,8 @@ pruneEmptyBtn.addEventListener("click", () => {
   redraw();
 });
 
-// A 90-degree rotation of the canvas is a well-defined coordinate transform,
-// so existing boxes can be carried through it rather than discarded.
-// oldW/oldH are the pre-rotation `full` canvas dimensions.
+// Maps one box corner through a 90-degree canvas rotation. oldW/oldH are the
+// pre-rotation `full` canvas dimensions.
 function rotatePoint([x, y], delta, oldW, oldH) {
   return delta > 0 ? [oldH - y, x] : [y, oldW - x];
 }
@@ -970,11 +898,10 @@ async function recognizeTile([x0, y0, x1, y1], signal) {
   }));
 }
 
-// Splits the (x0,y0)-(x0+w,y0+h) region of `full` into RapidOCR-sized crops,
-// in full-image coordinates, auto-tiling if the region is large (see
-// PLAN.md, "Tiled scanning for large images"). Shared by the whole-photo
-// "Run OCR" button and per-drawn-box recognition below -- keeping every
-// upload under the backend's hard size limit (OCR_MAX_DIMENSION) either way.
+// Splits the (x0,y0)-(x0+w,y0+h) region of `full` into tile-sized crops in
+// full-image coordinates (PLAN.md, "Tiled scanning for large images").
+// Shared by the whole-photo "Run OCR" button and per-drawn-box recognition;
+// keeps every upload under the backend's OCR_MAX_DIMENSION limit.
 function tileBoxesFor(x0, y0, w, h) {
   if (w <= 0 || h <= 0) return [];
   const tiles = tileGrid(w, h, TILE_SIZE, {
@@ -999,27 +926,19 @@ cancelScanBtn.addEventListener("click", () => {
 });
 
 // Margin around the user's rough box, giving the detector room to find the
-// tight text region itself rather than relying on the recognizer to cope
-// with an imprecise crop.
+// tight text region itself.
 function marginFor(bounds) {
   const w = bounds.maxX - bounds.minX;
   const h = bounds.maxY - bounds.minY;
   return Math.max(6, 0.15 * Math.min(w, h));
 }
 
-// A drawn box is really just "a region to scan" — it may hold one label
-// (the common case) or several (a looser region covering a cluttered/tiny-
-// label area), so it's tiled the same way the whole photo is. Each pending
-// (undrawn-yet-recognized) box gets its own placeholder bookkeeping entry
-// so its tile(s) can be reassembled once they've all reported back.
+// A drawn box is a region to scan — it may hold one label or several, so
+// it's tiled the same way the whole photo is. Each pending box gets a
+// placeholder entry so its tiles can be reassembled once all report back.
 function recognizePendingBoxes() {
-  // Excludes placeholders already in pendingPlaceholders -- otherwise
-  // clicking this again before an earlier click's tile(s) for the same box
-  // finish would overwrite that box's live bookkeeping entry with a fresh
-  // one, orphaning the earlier tile(s) still in scanQueue: when one of
-  // those arrives, pendingPlaceholders.get() returns whatever the *second*
-  // click set (or, worse, undefined once that already finished and deleted
-  // itself), throwing partway through the drain loop.
+  // Skips boxes already queued: one placeholder entry per box, so a second
+  // click can't overwrite bookkeeping the first click's tiles still refer to.
   const pending = detections.filter(
     (d) => d.score == null && !d.attempted && !pendingPlaceholders.has(d.id),
   );
@@ -1049,24 +968,15 @@ function recognizePendingBoxes() {
 }
 recognizePendingBtn.addEventListener("click", recognizePendingBoxes);
 
-// Drains scanQueue one tile at a time -- sequential, not parallel, since the
-// backend's own job queue is bounded (OCR_QUEUE_MAXSIZE) and firing many
-// requests at once would just 503 most of them instead of letting its
-// single worker work through them. runOcrBtn's handler and
-// recognizePendingBoxes() both just push onto the queue and call this; if a
-// drain is already running this is a no-op, since the loop below picks up
-// newly-pushed items on its next iteration -- that's what lets new boxes be
-// added mid-scan instead of the two kinds of scan having to lock each other
-// out.
+// Drains scanQueue one tile at a time -- sequential, since the backend's own
+// job queue is bounded (OCR_QUEUE_MAXSIZE) and parallel requests would just
+// 503. Callers push onto the queue and call this; if a drain is already
+// running this is a no-op, and the loop picks up newly-pushed items on its
+// next iteration -- that's what lets boxes be added mid-scan.
 //
-// Deliberately doesn't auto-dedupe overlapping tiles' results the way a
-// prior version of this code did per-call: a whole-photo scan and a
-// drawn-box scan both commonly produce the same label detected twice near a
-// tile seam, and rather than silently resolving that here, it's left to the
-// existing manual "Prune overlapping" button -- one dedup path instead of
-// two, and the raw per-tile results stay inspectable before anything's
-// merged. The completion message below nudges toward that button when it
-// looks like there's cleanup to do.
+// Overlapping tiles' duplicate results are not deduped here; that's left to
+// the manual "Prune overlapping" button, so the raw per-tile results stay
+// inspectable. The completion message points at it when there's cleanup to do.
 async function ensureWorkerRunning() {
   if (scanAbortController) return;
   scanAbortController = new AbortController();
@@ -1080,11 +990,9 @@ async function ensureWorkerRunning() {
   let manualNoBoostCount = 0;
   let errorCount = 0;
 
-  // Cleanup (queue/overlay/controller reset, status message) lives in
-  // finally so it always runs -- an unexpected throw here must not leave
-  // scanAbortController stuck non-null, which would silently wedge every
-  // future scan (ensureWorkerRunning() would early-return forever) with no
-  // way to recover short of a page reload.
+  // Cleanup lives in finally so it always runs: a throw that left
+  // scanAbortController non-null would wedge every future scan, since
+  // ensureWorkerRunning() early-returns whenever it's set.
   try {
     while (scanQueue.length > 0) {
       if (signal.aborted) break;
@@ -1096,9 +1004,8 @@ async function ensureWorkerRunning() {
         found = await recognizeTile(item.box, signal);
       } catch (err) {
         if (err.name === "AbortError" || signal.aborted) break;
-        // A genuine per-tile failure (network blip, etc.) is treated like a
-        // tile that found nothing, rather than losing this item's placeholder
-        // bookkeeping or aborting every other queued item over one bad tile.
+        // A per-tile failure counts as "found nothing", so one bad tile
+        // doesn't lose its placeholder bookkeeping or abort the rest.
         found = [];
         errorCount++;
       }
@@ -1142,10 +1049,8 @@ async function ensureWorkerRunning() {
     const cancelled = signal.aborted;
     const leftoverCount = scanQueue.length;
     scanQueue = [];
-    // A cancelled region keeps whatever tiles it did get back before the
-    // cancel landed (consistent with the auto layer's own partial-keep above)
-    // rather than discarding real results just because the region as a whole
-    // wasn't fully done.
+    // A cancelled region keeps whatever tiles came back before the cancel
+    // landed, matching the auto layer's partial-keep above.
     for (const entry of pendingPlaceholders.values()) {
       if (entry.found.length === 0) continue;
       const newDetections = entry.found.map((d) => ({ id: nextId++, ...d, source: "manual" }));
@@ -1156,10 +1061,9 @@ async function ensureWorkerRunning() {
     tileOverlay = [];
     scanAbortController = null;
 
-    // img null means Clear ran mid-scan and already replaced this status with
-    // its own clean state; suppressScanSummary means clearDetections() did
-    // (img stays set there, so that check alone wouldn't catch this case) --
-    // either way, don't resurrect a stale scan message over it.
+    // Clear ran mid-scan (img null), or Clear boxes did (suppressScanSummary,
+    // since img stays set there) -- either way, don't post a stale summary
+    // over the clean state it just left behind.
     if (img && !suppressScanSummary) {
       const parts = [];
       if (autoFoundCount > 0) parts.push(`found ${autoFoundCount} box(es) from the full photo`);
@@ -1187,9 +1091,8 @@ async function ensureWorkerRunning() {
 
 const MAX_THUMB_HEIGHT = 36; // display px
 
-// Cached on the detection itself, keyed by its box — redraw()s triggered by
-// hover alone (no box change) reuse the cached data URL instead of
-// re-cropping and re-encoding a PNG on every mouse move.
+// Cached on the detection, keyed by its box, so hover-driven redraws reuse
+// the data URL instead of re-encoding a PNG on every mouse move.
 function thumbnailDataUrl(detection) {
   const key = JSON.stringify(detection.box);
   if (detection._thumbKey === key && detection._thumbUrl) return detection._thumbUrl;
@@ -1211,9 +1114,8 @@ function thumbnailDataUrl(detection) {
   return detection._thumbUrl;
 }
 
-// Frames the box with 3x its own width/height as margin on each side (so
-// the visible region is 7x the box's size along each axis) — enough context
-// to see where the box sits without zooming in so tight it's disorienting.
+// Frames the box with 3x its own width/height as margin on each side, so the
+// visible region is 7x the box's size along each axis.
 function zoomToBox(detection) {
   if (!full) return;
   const b = boundsOf(detection.box);
@@ -1303,9 +1205,8 @@ function renderResultsList() {
       updateButtons();
       redraw();
     });
-    // Mirrors canvas hover: hovering a row reveals that box's full label on
-    // the image. Uses redrawCanvas(), not redraw() — rebuilding the list
-    // DOM while the mouse sits on one of its rows would flicker/misfire.
+    // Hovering a row reveals that box's full label on the image, mirroring
+    // canvas hover. redrawCanvas(), not redraw(): see redrawCanvas().
     li.addEventListener("mouseenter", () => {
       hoverBoxId = d.id;
       redrawCanvas();
@@ -1320,9 +1221,8 @@ function renderResultsList() {
   });
 }
 
-// The meta line (filename/resolution/rotation/zoom) stays regular text; the
-// message half is wrapped in its own monospace span so it visually reads as
-// a distinct "system message" rather than blending into the description.
+// The meta line stays regular text; the message half is wrapped in a
+// monospace span so it reads as a distinct system message.
 function setStatusMessage(msg) {
   lastStatusMessage = msg;
   const meta = metaLine();
@@ -1337,8 +1237,7 @@ function setStatusMessage(msg) {
 fileInput.addEventListener("change", () => {
   const file = fileInput.files[0];
   if (!file) return;
-  // Stop any in-flight scan against the photo being replaced -- same
-  // reasoning as clearSession() (see scanAbortController).
+  // Stop any in-flight scan against the photo being replaced.
   if (scanAbortController) scanAbortController.abort();
   const url = URL.createObjectURL(file);
   const nextImg = new Image();
@@ -1357,10 +1256,8 @@ fileInput.addEventListener("change", () => {
   nextImg.src = url;
 });
 
-// On boot, restore a previously-remembered image + boxes (if any) before
-// anything else — lets navigating away from Scan and back, or just closing
-// and reopening the tab, pick back up where you left off. Runs unawaited;
-// there's nothing else on the page that depends on it finishing.
+// On boot, restore a previously-remembered image + boxes, if any. Runs
+// unawaited; nothing else on the page depends on it finishing.
 async function restoreSession() {
   let blob, state;
   try {
@@ -1393,15 +1290,11 @@ async function restoreSession() {
 }
 restoreSession();
 
-// Collate every recognized (non-empty, non-pending) detection's text and hand
-// it to guide.js via sessionStorage — the same mechanism a plain page
-// navigation can carry state through without a server round-trip.
-// Deliberately NOT deduped: a real board pile can hold several copies of the
-// same board (e.g. ten of the same RAM card), and guide.js's option grouping
-// now counts quantities to strive for complete sets — collapsing duplicates
-// here would throw that count away before it ever reaches guide.js. Use
-// "Prune overlapping" first if a region got detected more than once by
-// mistake; every box left after that is trusted to be one real board.
+// Hands every recognized detection's text to guide.js via sessionStorage.
+// Not deduped: a real board pile can hold several copies of the same board,
+// and guide.js counts quantities to allocate complete sets. Use "Prune
+// overlapping" first if a region got detected more than once by mistake;
+// every box left after that counts as one real board.
 goToGuideBtn.addEventListener("click", () => {
   const numbers = detections
     .filter((d) => d.score != null && d.text && d.text.trim())
