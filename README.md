@@ -10,7 +10,7 @@ See [`PLAN.md`](PLAN.md) for architecture, roadmap, and design decisions.
 The app is two independent pieces — for development or just day-to-day use.
 
 **Frontend** — `index.html` (landing page), `guide.html`/`guide.js`
-(identify), `ocr.html`/`ocr.js` (scan), plus `core.js`/`geometry.js`. Static
+(identify), `ocr.html`/`ocr.js` (scan), plus `core.js`/`geometry.js`/`tiling.js`. Static
 files, no build step, no dependencies. Serve the repo root with any static
 file server, e.g.:
 
@@ -43,7 +43,7 @@ that now-untiled request — see `backend/README.md`, "Local development".
 ## Tests
 
 ```
-npm test              # frontend: core.js / geometry.js (Node's built-in test runner)
+npm test              # frontend: core.js / geometry.js / tiling.js (Node's built-in test runner)
 cd backend
 python -m unittest discover -s test -v   # backend, after installing its deps — see backend/README.md
 ```

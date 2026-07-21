@@ -24,7 +24,7 @@ python3 -m http.server 8123        # frontend, from the repo root
 
 ## Step 1 — thumbnails out of persisted state, and out of the pan path
 
-- [ ] **Change.** `thumbnailDataUrl()` caches base64 PNGs as `_thumbKey`/`_thumbUrl` on the
+- [x] **Change.** `thumbnailDataUrl()` caches base64 PNGs as `_thumbKey`/`_thumbUrl` on the
       detection objects themselves. `persistState()` serialises `detections` wholesale, and
       `redraw()` calls `persistState()` — so the pan branch of `pointermove`, the wheel pan
       branch, and `zoomTo()` each write every thumbnail to IndexedDB on every pointer event,
@@ -33,39 +33,62 @@ python3 -m http.server 8123        # frontend, from the repo root
       box key as today, cleared by `clearSession()`/`clearDetections()` since `nextId` restarts
       at 1). Switch the three view-only call sites to `redrawCanvas()`: pan and zoom change no
       persisted state and no list content, so neither the DOM rebuild nor the write is needed.
-- [ ] **Verify.** `node --check ocr.js`, `npm test`. Manually: load a photo, scan, then pan
-      and zoom with ~20 boxes present — motion should stay smooth and the list must not
-      flicker. Reload the page and confirm the session still restores with boxes intact
-      (this is what proves the persistence path still works after the cache moved off it).
-- [ ] **Consider.** Whether the id-keyed cache should also be dropped on rotate, where
-      `detections` objects are rebuilt and every box's crop changes.
+      Landed as a module-level `thumbnailCache` (id -> `{ key, url }`), cleared by
+      `clearSession()`, `clearDetections()`, `rotate()`, and loading a new photo.
+      `restoreSession()` strips `_thumbKey`/`_thumbUrl` from sessions saved before the
+      change, so an existing session stops carrying its data URLs forward.
+- [ ] **Verify.** `node --check ocr.js` and `npm test` pass (62/62). **Manual check still
+      outstanding:** load a photo, scan, then pan and zoom with ~20 boxes present — motion
+      should stay smooth and the list must not flicker. Reload and confirm the session
+      restores with boxes intact (this is what proves the persistence path still works after
+      the cache moved off it). Rotate with boxes present and confirm the list thumbnails
+      re-crop to match.
+- [x] **Consider.** Resolved as yes — `rotate()` clears the cache. Box coordinates change
+      under rotation, so the key check catches it in almost every case, but a centrally
+      symmetric box on a square image can rotate onto its own coordinates while `full`'s
+      contents change beneath it. Clearing is cheap; relying on the key is not sound.
 
 ## Step 2 — count HTTP failures as failures
 
-- [ ] **Change.** `recognizeTile()` does `resp.ok ? await resp.json() : []`, and the worker's
+- [x] **Change.** `recognizeTile()` does `resp.ok ? await resp.json() : []`, and the worker's
       `errorCount` only counts thrown errors. A scan whose tiles all return 503 (backend
       queue full — an expected condition under load) currently reports "Scan complete,
       nothing found". Throw on a non-OK response; the worker's existing `catch` already
       treats that as a tile that found nothing *and* increments `errorCount`, which is the
       wanted behaviour.
-- [ ] **Verify.** `node --check`, `npm test`. Manually: stop the backend, run a scan, and
-      confirm the summary reports failed tiles rather than "nothing found".
+      The summary also names the first error, since "3 tile(s) failed" alone doesn't
+      distinguish a busy backend from a misconfigured one. Slightly beyond the change as
+      first written, but the step exists to stop the status line misleading.
+- [x] **Verify.** `node --check` and `npm test` pass (62/62). Behaviour confirmed in a real
+      browser: pointing the `fieldGuideBackendUrl` override at the static file server (which
+      returns 501 for POST) produced `1 tile(s) failed (HTTP 501)`, where the pre-fix code
+      reported `Scan complete, nothing found` for the identical request.
 - [ ] **Consider.** Whether 503 specifically deserves a bounded retry with `Retry-After`
       rather than being reported as a failure — the backend returns it precisely because the
       request is worth resending. Possibly its own step.
 
 ## Step 3 — don't discard work enqueued during scan teardown
 
-- [ ] **Change.** After `abort()`, `scanAbortController` stays non-null until the worker's
+- [x] **Change.** After `abort()`, `scanAbortController` stays non-null until the worker's
       `finally` runs. Clicking Run OCR in that window pushes tiles onto `scanQueue`,
       `ensureWorkerRunning()` early-returns, and the `finally` then does `scanQueue = []` and
       throws them away — the button appears dead. Tag items enqueued while
       `scanAbortController.signal.aborted` is true, and carry those into the next drain
       instead of clearing them.
-- [ ] **Verify.** `node --check`, `npm test`. Manually: start a scan of a large photo, click
-      Cancel scan, then immediately click Run OCR. A scan must start.
-- [ ] **Consider.** Whether the same window affects Clear boxes → draw → Recognize new boxes,
-      and whether the fix belongs at enqueue time or in the worker's teardown.
+      Landed as an `enqueueTile()` helper that tags each item with
+      `enqueuedAfterAbort`, plus a teardown that keeps the tagged items (and their tile
+      overlay entries), discards only the cancelled drain's own leftovers, and restarts the
+      worker when anything carried over.
+- [x] **Verify.** `node --check` and `npm test` pass (62/62). Behaviour confirmed in a real
+      browser, cancelling and re-scanning inside one `Runtime.evaluate` so the worker cannot
+      tear down between the two clicks: post-fix, 2 `/ocr` requests and the second scan
+      completes; pre-fix, 1 request and the status stays at
+      `cancelled (1 tile(s) left unscanned)`.
+- [x] **Consider.** Resolved: the fix belongs at enqueue time, because teardown cannot
+      otherwise tell a cancelled drain's leftovers from work that arrived during it. Clear
+      boxes → draw → Recognize new boxes is covered by the same tag. A carried-over
+      *manual* tile also needs its `pendingPlaceholders` entry preserved, or the next drain
+      resolves a placeholder that no longer exists — hence `carriedPlaceholderIds`.
 
 ## Step 4 — small hygiene
 
@@ -81,16 +104,24 @@ python3 -m http.server 8123        # frontend, from the repo root
 
 ## Step 5 — split tiling out of `geometry.js`
 
-- [ ] **Change.** `geometry.js` holds two unrelated clusters: canvas view-transform and
+- [x] **Change.** `geometry.js` holds two unrelated clusters: canvas view-transform and
       hit-testing (its stated job), and OCR tiling/dedup (`axisTiles`, `tileGrid`,
       `selectNonOverlapping`) which encodes tile sizes, seam overlap, and score ranking.
       Move the second cluster to `tiling.js`; split `test/geometry.test.js` along the same
       line. Both halves stay pure and Node-testable.
-- [ ] **Verify.** `npm test` — this step is fully covered by the existing suite, which is why
-      it goes before anything touching `ocr.js` structure. Manually: one scan, to confirm the
-      import move didn't break `ocr.js`.
-- [ ] **Consider.** Whether `selectNonOverlapping` belongs with tiling or with detections —
-      it is now only used by "Prune overlapping", not by the tiling path.
+      `axisTiles`/`tileGrid` moved to `tiling.js`; `selectNonOverlapping` did not (see
+      Consider below). `PLAN.md` and `README.md` updated to match.
+- [x] **Verify.** `npm test` passes, still 62 tests — the same count before and after, which
+      is what shows the split moved tests rather than losing or duplicating them. Confirmed
+      in a browser too: `node --check` parses but does not resolve imports, so a bad
+      specifier would only appear at load. A real scan ran end to end through the moved
+      `tileGrid` and produced 21 boxes, with no script or module errors.
+- [x] **Consider.** Resolved: `selectNonOverlapping` stays in `geometry.js` for now.
+      It is no longer part of the tiling path at all — that call site died in the queue
+      refactor — so filing it under `tiling.js` would recreate the same drift this step
+      removes. It is box math with a thin scoring policy on top, so it sits acceptably
+      beside `boundsOf`/`overlapArea`, and is a candidate to join `detections.js` in step 7
+      rather than justifying a module of its own now.
 
 ## Step 6 — extract `session-store.js` from `ocr.js`
 

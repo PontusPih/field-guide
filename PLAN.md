@@ -47,14 +47,17 @@ A user with a stack of unknown boards enters/scans their module numbers. The app
   export text. No DOM — imported by `guide.js` and the tests.
 - `ocr.html` / `ocr.js` — the scan tool: load/rotate/pan/zoom a board photo, run
   OCR against `backend/server.py`, edit the resulting boxes, then hand the
-  recognized module numbers to `guide.html`. Imports `geometry.js`.
-- `geometry.js` — pure view-transform/hit-testing math for `ocr.js`'s canvas. No
+  recognized module numbers to `guide.html`. Imports `geometry.js` and `tiling.js`.
+- `geometry.js` — pure view-transform/hit-testing/box math for `ocr.js`'s canvas. No
   DOM — imported by `ocr.js` and its test.
+- `tiling.js` — pure region-tiling math for the OCR backend (`axisTiles`/`tileGrid`).
+  Split from `geometry.js`: it encodes the backend's size constraints, not anything
+  about the canvas. No DOM — imported by `ocr.js` and its test.
 - `backend/` — the Python OCR service (`server.py`, `Dockerfile`); see Phase 2b.
   Not client-side, so it stays a separate service from the rest of the app.
 - `test/` — Node built-in test runner (`node --test`), zero dependencies:
-  `core.test.js` + `guide.test.js` (parser/lookup logic) and `geometry.test.js`
-  (canvas math).
+  `core.test.js` + `guide.test.js` (parser/lookup logic), `geometry.test.js`
+  (canvas math), and `tiling.test.js` (region tiling).
 - `field-guide-02.txt` — read-only source data (2002 edition).
 
 ## Roadmap
@@ -296,7 +299,7 @@ spending cap/kill-switch), not pay-per-use exposure.
 Fixes the memory ceiling above without requiring a bigger host. `recognizeRegion()`
 used to send whatever the user drew as one crop, at the photo's native resolution
 (`ocr.js` never resizes on capture) — so a box drawn around a whole 12MP phone photo
-would hit the ~700MB ceiling directly. Implemented (`ocr.js`, `geometry.js`,
+would hit the ~700MB ceiling directly. Implemented (`ocr.js`, `tiling.js`,
 `server.py`).
 
 - [x] **Decided: tile client-side, not server-side.** `recognizeRegion()` already
@@ -331,8 +334,8 @@ would hit the ~700MB ceiling directly. Implemented (`ocr.js`, `geometry.js`,
       axis ever produces a sliver/leftover tile smaller than the target size.
       Computed independently per axis (row count and column count don't depend on
       each other), which handles odd/elongated aspect ratios without needing
-      non-square tiles. Implemented as `geometry.js`'s `axisTiles`/`tileGrid`
-      (Node-tested, `test/geometry.test.js`) — folds the single-tile threshold above
+      non-square tiles. Implemented as `tiling.js`'s `axisTiles`/`tileGrid`
+      (Node-tested, `test/tiling.test.js`) — folds the single-tile threshold above
       into the same function (a region within `tile * singleCellFactor` returns one
       cell spanning the whole axis, subsuming the plain `total <= tile` case too).
 - [x] **Server-side hard dimension limit**, independent of whether client-side

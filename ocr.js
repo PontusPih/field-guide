@@ -1,5 +1,3 @@
-"use strict";
-
 // Scan tool frontend. Load a photo, rotate in 90-degree steps, pan/zoom,
 // run OCR against the backend, edit the resulting boxes (select, delete,
 // draw new ones), then hand the recognized module numbers to guide.js.
@@ -22,8 +20,9 @@
 
 import {
   toSource, toDisplay, hitTestBoxes, distance, nearestWithinRadius, pointInPolygon,
-  boundsOf, overlapArea, tileGrid, selectNonOverlapping,
+  boundsOf, overlapArea, selectNonOverlapping,
 } from "./geometry.js";
+import { tileGrid } from "./tiling.js";
 import { resolveBackendUrl, BACKEND_URL_STORAGE_KEY, LOCALHOST_NAMES } from "./backend-config.js";
 
 // Dev/prod switch, the same signal backend-config.js uses for BACKEND_URL.
@@ -916,11 +915,18 @@ function tileBoxesFor(x0, y0, w, h) {
   return tiles.map(([tx0, ty0, tx1, ty1]) => [x0 + tx0, y0 + ty0, x0 + tx1, y0 + ty1]);
 }
 
+// A tile enqueued while a cancelled scan is still tearing down belongs to the
+// next drain, not the one being cancelled. ensureWorkerRunning()'s teardown
+// reads the flag to tell the two apart.
+function enqueueTile(item) {
+  scanQueue.push({ ...item, enqueuedAfterAbort: scanAbortController?.signal.aborted === true });
+  tileOverlay.push({ box: item.box, done: false });
+}
+
 runOcrBtn.addEventListener("click", () => {
   if (!full) return;
   for (const box of tileBoxesFor(0, 0, full.width, full.height)) {
-    scanQueue.push({ box, kind: "auto" });
-    tileOverlay.push({ box, done: false });
+    enqueueTile({ box, kind: "auto" });
   }
   redrawCanvas();
   ensureWorkerRunning();
@@ -964,8 +970,7 @@ function recognizePendingBoxes() {
     if (boxes.length === 0) continue; // degenerate (zero-area) region -- nothing to scan
     pendingPlaceholders.set(placeholder.id, { placeholder, remaining: boxes.length, found: [], gotUpscaleBoost });
     for (const box of boxes) {
-      scanQueue.push({ box, kind: "manual", placeholderId: placeholder.id });
-      tileOverlay.push({ box, done: false });
+      enqueueTile({ box, kind: "manual", placeholderId: placeholder.id });
     }
   }
   redrawCanvas();
@@ -1054,18 +1059,29 @@ async function ensureWorkerRunning() {
     }
   } finally {
     const cancelled = signal.aborted;
-    const leftoverCount = scanQueue.length;
-    scanQueue = [];
+    // Tiles enqueued after the abort landed belong to the next drain, so only
+    // this drain's own leftovers are discarded.
+    const carried = scanQueue.filter((t) => t.enqueuedAfterAbort);
+    const leftoverCount = scanQueue.length - carried.length;
+    const carriedPlaceholderIds = new Set(
+      carried.filter((t) => t.placeholderId != null).map((t) => t.placeholderId),
+    );
+    scanQueue = carried.map((t) => ({ ...t, enqueuedAfterAbort: false }));
+    tileOverlay = carried.map((t) => ({ box: t.box, done: false }));
+
     // A cancelled region keeps whatever tiles came back before the cancel
-    // landed, matching the auto layer's partial-keep above.
-    for (const entry of pendingPlaceholders.values()) {
-      if (entry.found.length === 0) continue;
-      const newDetections = entry.found.map((d) => ({ id: nextId++, ...d, source: "manual" }));
-      const idx = detections.indexOf(entry.placeholder);
-      if (idx >= 0) detections.splice(idx, 1, ...newDetections);
+    // landed, matching the auto layer's partial-keep above. A placeholder
+    // whose tiles carried over is left intact for the next drain to finish,
+    // rather than being resolved here and orphaning those tiles.
+    for (const [placeholderId, entry] of pendingPlaceholders) {
+      if (carriedPlaceholderIds.has(placeholderId)) continue;
+      if (entry.found.length > 0) {
+        const newDetections = entry.found.map((d) => ({ id: nextId++, ...d, source: "manual" }));
+        const idx = detections.indexOf(entry.placeholder);
+        if (idx >= 0) detections.splice(idx, 1, ...newDetections);
+      }
+      pendingPlaceholders.delete(placeholderId);
     }
-    pendingPlaceholders.clear();
-    tileOverlay = [];
     scanAbortController = null;
 
     // Clear ran mid-scan (img null), or Clear boxes did (suppressScanSummary,
@@ -1095,6 +1111,10 @@ async function ensureWorkerRunning() {
     suppressScanSummary = false;
     updateButtons();
     redraw();
+
+    // Work arrived while this drain was tearing down -- pick it up, rather
+    // than leaving it queued with nothing running to consume it.
+    if (scanQueue.length > 0) ensureWorkerRunning();
   }
 }
 
