@@ -6,6 +6,13 @@
   "description": "PDP-11 Q-bus/UNIBUS module identifier (client-side, GitHub Pages).",
   "scripts": {
     "test": "node --test test/*.test.js",
-    "test:browser": "node --test $([ \"$HEADED\" = 1 ] && echo --test-concurrency=1) test/browser/*.spec.mjs"
+    "test:browser": "node --test $([ \"$HEADED\" = 1 ] && echo --test-concurrency=1) test/browser/*.spec.mjs",
+    "test:browser:coverage": "rm -rf .coverage-browser && COVERAGE=1 node --test test/browser/*.spec.mjs && node test/browser/coverage-report.mjs"
+  },
+  "devDependencies": {
+    "istanbul-lib-coverage": "^3.2.2",
+    "istanbul-lib-report": "^3.0.1",
+    "istanbul-reports": "^3.2.0",
+    "v8-to-istanbul": "^9.3.0"
   }
 }

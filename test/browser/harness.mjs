@@ -20,13 +20,15 @@
 
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { readFile, mkdtemp, rm, access } from "node:fs/promises";
+import { readFile, mkdtemp, rm, access, mkdir, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join, extname, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 
 const SITE_ROOT = fileURLToPath(new URL("../../", import.meta.url));
+const COVERAGE_DIR = fileURLToPath(new URL("../../.coverage-browser/", import.meta.url));
 
 // Chrome is looked up by name rather than configured: the spec skips itself
 // when none is found, so a machine without one still gets a green `npm test`.
@@ -117,6 +119,12 @@ const SLOWMO_METHODS = new Set([
   "Input.dispatchMouseEvent", "Input.dispatchKeyEvent", "Page.navigate",
 ]);
 
+// COVERAGE=1 collects raw V8 coverage of the app code exercised during the
+// run and dumps it to .coverage-browser/ for `coverage-report.mjs` to merge
+// and print afterward. Off by default: precise coverage adds instrumentation
+// overhead, and most runs don't want a dump directory left behind.
+const COVERAGE_ON = process.env.COVERAGE === "1";
+
 // Chrome writes its assigned port to DevToolsActivePort once the debugging
 // socket is listening; polling for that file is what replaces "sleep and hope
 // it booted".
@@ -147,6 +155,12 @@ class Page {
   // automatically. A spec that needs to answer "Cancel" instead sets this to
   // false before the click that triggers it.
   dialogAccept = true;
+  // Raw V8 coverage snapshots (Profiler.takePreciseCoverage()'s own result
+  // shape), one per navigation plus a final one at close() -- a full page
+  // reload discards the previous scripts' counters, so coverage has to be
+  // grabbed just before each reload rather than once at the end. Left empty,
+  // at zero cost, unless COVERAGE=1.
+  coverageSnapshots = [];
 
   constructor(ws) {
     this.#ws = ws;
@@ -212,8 +226,17 @@ class Page {
   }
 
   async goto(url) {
+    // A full navigation discards the previous scripts' coverage counters, so
+    // whatever ran since the last snapshot (or since coverage started) has to
+    // be captured now or it's lost.
+    if (COVERAGE_ON) await this.#snapshotCoverage();
     await this.send("Page.navigate", { url });
     await this.waitFor("document.readyState === 'complete'", `${url} to load`);
+  }
+
+  async #snapshotCoverage() {
+    const { result } = await this.send("Profiler.takePreciseCoverage");
+    this.coverageSnapshots.push(result);
   }
 }
 
@@ -272,6 +295,13 @@ async function launch() {
     await page.send("Emulation.setDeviceMetricsOverride", {
       width: 1400, height: 1000, deviceScaleFactor: 1, mobile: false,
     });
+    if (COVERAGE_ON) {
+      await page.send("Profiler.enable");
+      // detailed: per-function ranges, not just per-script totals; callCount
+      // (not just true/false) is what lets separate snapshots be summed
+      // rather than merely OR'd together.
+      await page.send("Profiler.startPreciseCoverage", { callCount: true, detailed: true });
+    }
   } catch (err) {
     chrome.kill();
     await exited;
@@ -284,6 +314,18 @@ async function launch() {
     page,
     origin: server.origin,
     async close() {
+      // The page that was loaded when the spec finished never got a
+      // pre-navigation snapshot -- take one last one before it's lost.
+      if (COVERAGE_ON) {
+        await page.send("Profiler.takePreciseCoverage").then(
+          ({ result }) => page.coverageSnapshots.push(result),
+        );
+        await mkdir(COVERAGE_DIR, { recursive: true });
+        await writeFile(
+          join(COVERAGE_DIR, `${randomUUID()}.json`),
+          JSON.stringify(page.coverageSnapshots),
+        );
+      }
       chrome.kill();
       // Chrome rewrites its profile on shutdown, so removing the directory
       // before the process is gone leaves it behind.
@@ -294,4 +336,4 @@ async function launch() {
   };
 }
 
-export { launch, findChrome };
+export { launch, findChrome, COVERAGE_DIR, SITE_ROOT };
