@@ -3,7 +3,7 @@
 // draw new ones), then hand the recognized module numbers to guide.js.
 // Coordinate transforms and hit-testing live in geometry.js as pure,
 // DOM-free functions. The loaded image and its boxes persist in IndexedDB
-// (see "session persistence" below), so reopening the page restores them.
+// (see session-store.js), so reopening the page restores them.
 //
 // Gesture model:
 //   - plain left-drag on empty canvas  -> draw a new box
@@ -24,6 +24,9 @@ import {
 } from "./geometry.js";
 import { tileGrid } from "./tiling.js";
 import { resolveBackendUrl, BACKEND_URL_STORAGE_KEY, LOCALHOST_NAMES } from "./backend-config.js";
+import {
+  persistImage, persistState, loadSession, clearStoredSession,
+} from "./session-store.js";
 
 // Dev/prod switch, the same signal backend-config.js uses for BACKEND_URL.
 // Dev skips the size limits a memory-constrained prod backend needs -- see
@@ -138,66 +141,6 @@ let resizeHandleIndex = null; // which corner (see cornersOf), for "resize"
 let hoverDeleteId = null; // id of the box whose delete-X is currently shown
 let hoverBoxId = null; // id of the box the cursor is currently over (declutter: reveals full label)
 
-// --- session persistence -------------------------------------------------
-// Remembers the loaded image, its rotation, and every box (drawn or
-// recognized), so returning to ocr.html restores the session. IndexedDB
-// rather than sessionStorage/localStorage: the image is binary and can be
-// several MB. Image and box state live under separate keys, so editing a box
-// doesn't re-store the whole photo.
-const DB_NAME = "field-guide-scan";
-const STORE = "session";
-const IMAGE_KEY = "image";
-const STATE_KEY = "state";
-
-function openDb() {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
-    req.onupgradeneeded = () => req.result.createObjectStore(STORE);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-async function dbPut(key, value) {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).put(value, key);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-async function dbGet(key) {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const req = db.transaction(STORE, "readonly").objectStore(STORE).get(key);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-async function dbDelete(key) {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).delete(key);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-// Stores the File itself, not just its bytes: IndexedDB's structured clone
-// keeps .name, which restoreSession() shows (the native file input can't be
-// told to display a filename it didn't set).
-function persistImage(file) {
-  dbPut(IMAGE_KEY, file).catch((err) => console.warn("Could not save scan image:", err));
-}
-
-function persistState() {
-  dbPut(STATE_KEY, { rotation, detections }).catch((err) => console.warn("Could not save scan state:", err));
-}
-
 async function clearSession() {
   if (!img && detections.length === 0) return;
   if (!confirm("Clear the loaded photo and all boxes?")) return;
@@ -226,11 +169,7 @@ async function clearSession() {
   updateButtons();
   renderResultsList();
 
-  try {
-    await Promise.all([dbDelete(IMAGE_KEY), dbDelete(STATE_KEY)]);
-  } catch (err) {
-    console.warn("Could not clear saved scan session:", err);
-  }
+  await clearStoredSession();
 }
 clearBtn.addEventListener("click", clearSession);
 
@@ -554,7 +493,7 @@ function redrawCanvas() {
 function redraw() {
   redrawCanvas();
   renderResultsList();
-  persistState();
+  persistState({ rotation, detections });
 }
 
 function normalizedRectBox(b) {
@@ -1311,14 +1250,10 @@ fileInput.addEventListener("change", () => {
 // On boot, restore a previously-remembered image + boxes, if any. Runs
 // unawaited; nothing else on the page depends on it finishing.
 async function restoreSession() {
-  let blob, state;
-  try {
-    [blob, state] = await Promise.all([dbGet(IMAGE_KEY), dbGet(STATE_KEY)]);
-  } catch (err) {
-    console.warn("Could not restore previous scan session:", err);
-    return;
-  }
-  if (!blob) return;
+  const stored = await loadSession();
+  if (!stored) return; // storage unreadable; session-store.js has logged it
+  const { blob, state } = stored;
+  if (!blob) return; // nothing saved yet
 
   const url = URL.createObjectURL(blob);
   const nextImg = new Image();

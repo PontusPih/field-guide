@@ -134,14 +134,26 @@ python3 -m http.server 8123        # frontend, from the repo root
 
 ## Step 6 — extract `session-store.js` from `ocr.js`
 
-- [ ] **Change.** The IndexedDB layer (`openDb`, `dbPut`, `dbGet`, `dbDelete`, `persistImage`,
-      `persistState`, and the load half of `restoreSession`) is the cleanest seam in the file:
-      it takes and returns plain data and touches no shared mutable state. ~90 lines out, no
-      circular import risk. Pure move, no behaviour change.
-- [ ] **Verify.** `node --check`, `npm test`. Manually: load a photo, scan, reload the page
-      and confirm restore; then Clear and reload, confirming nothing comes back.
-- [ ] **Consider.** Whether the extracted module is worth unit-testing with a fake
-      IndexedDB, or whether that is more machinery than it earns.
+- [x] **Change.** Landed as `session-store.js` (95 lines): the IndexedDB layer plus four
+      exported entry points — `persistImage`, `persistState`, `loadSession`,
+      `clearStoredSession`. `ocr.js` is down to 1294 lines and holds no `indexedDB`
+      reference at all. The module keeps no state: `persistState(state)` now takes the
+      `{ rotation, detections }` snapshot as an argument rather than closing over module
+      scope, which is the one real change in shape. `loadSession()` distinguishes "nothing
+      saved yet" (a `blob` of undefined) from "storage unreadable" (null), since the caller
+      treats those differently.
+- [x] **Verify.** `node --check` clean, `npm test` 62/62. Both directions confirmed in a
+      browser: two drawn boxes survive a reload with the filename intact (proving the
+      `File`, not just its bytes, still round-trips), and Clear followed by a reload brings
+      back neither boxes nor photo. The `confirm()` dialog is answered over CDP, so the
+      Clear path is genuinely exercised rather than skipped.
+      The check was then validated against a deliberately botched version of this same
+      extraction — `persistState()` called without its argument, the classic failure mode
+      when a closed-over value becomes a parameter. It failed as it should, restoring
+      `Restored "IMG_0664.jpg" (0 box(es))`: image kept, boxes silently lost.
+- [x] **Consider.** Not worth a fake-IndexedDB unit test. The module is a thin wrapper over
+      browser APIs, so a fake would mostly assert that the fake was called — the real
+      coverage is the round-trip above, which exercises actual storage.
 
 ## Step 7 — extract the pure helpers
 
