@@ -381,19 +381,38 @@ would hit the ~700MB ceiling directly. Implemented (`ocr.js`, `geometry.js`,
       editing source.
 
 **Known follow-ups from the implementation above**
-- [ ] Rotating the photo while a tiled scan is in flight desyncs the live tile-outline
+- [x] Rotating the photo while a tiled scan is in flight desyncs the live tile-outline
       overlay: `rotate()` remaps `detections`' boxes via `rotatePoint()` but not
       `tileOverlay` (added for live per-tile progress), leaving the outlines in stale
-      pre-rotation coordinates once rotated. Simplest fix is probably disabling
-      `rotateLeftBtn`/`rotateRightBtn` while a scan is in flight (matching how `runOcrBtn`
-      etc. already get disabled during processing) rather than live-remapping the overlay.
-- [ ] "Clear scan" doesn't cancel an in-flight tiled scan: `recognizeTiled`'s sequential
-      per-tile loop keeps awaiting/sending remaining tiles after the user clears, and
-      whatever comes back still gets applied (or at least keeps occupying the backend's
-      job queue) regardless. Needs some form of cancellation — e.g. a "scan generation"
-      counter checked after each `await`, or an `AbortController` wired into the tile
-      fetches — so Clear (or loading a new image) can signal the loop to stop early and
-      discard results. Not yet designed in detail.
+      pre-rotation coordinates once rotated. Fixed by disabling `rotateLeftBtn`/
+      `rotateRightBtn` while a scan is in flight rather than live-remapping the overlay:
+      a module-level `scanInProgress` flag is set around both `recognizeTiled` callers
+      (`runOcrBtn`'s handler and `recognizePendingBoxes()`), factored into
+      `updateButtons()`'s rotate-button disabled state, plus a defensive check directly
+      in `rotate()` for any non-button caller.
+- [x] "Clear scan" doesn't cancel an in-flight tiled scan: `recognizeTiled`'s sequential
+      per-tile loop kept awaiting/sending remaining tiles after the user cleared, and
+      whatever came back still got applied (or at least kept occupying the backend's job
+      queue) regardless. Fixed with a shared `scanAbortController`, non-null for the
+      duration of any scan (whole-photo or per-region): passed as `signal` into every
+      tile's `fetch` (actually cancels an in-flight request, freeing the backend's job
+      queue slot) and rechecked right after each tile's `await` resolves, since an
+      already-settled fetch can't retroactively be un-resolved by a later `abort()` —
+      that result is discarded instead of reaching `onTileFound`. `clearSession()` and
+      loading a new photo both call `.abort()` before proceeding. A new "Cancel scan"
+      button does the same without the rest of Clear's reset, keeping whatever boxes
+      the scan already found. The whole-photo scan keeps its partial results on cancel;
+      `recognizePendingBoxes()`'s `Promise.all` over per-region requests drops the whole
+      batch on cancel instead (placeholders revert to pending) since `Promise.all`
+      rejects as soon as any one region does.
+      **Interim decision, open for revisit:** `runOcrBtn` and `recognizePendingBtn` are
+      now mutually exclusive (each disabled while the other's scan is in flight) — both
+      share the single `scanAbortController` slot, and letting a second scan start would
+      silently orphan whichever one started first (Cancel/Clear would only reach the
+      newer one). This preempts the "shared queue for tiles and new boxes" feature
+      floated alongside this fix — worth a proper design pass (queue instead of lockout,
+      or merging a newly-drawn box into an already-running whole-photo scan's tile list)
+      rather than living with plain mutual exclusion long-term.
 - [ ] Too easy to click "Run OCR" and lose work: it replaces the whole auto-detected
       layer on every click (`source === "manual"` boxes survive, but anything done to
       auto-detected ones — deleted an incorrect box, moved/resized one to be more

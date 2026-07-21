@@ -43,6 +43,7 @@ const ctx = display.getContext("2d");
 const rotateLeftBtn = document.getElementById("rotateLeft");
 const rotateRightBtn = document.getElementById("rotateRight");
 const runOcrBtn = document.getElementById("runOcr");
+const cancelScanBtn = document.getElementById("cancelScan");
 const recognizePendingBtn = document.getElementById("recognizePending");
 const pruneOverlappingBtn = document.getElementById("pruneOverlapping");
 const pruneEmptyBtn = document.getElementById("pruneEmpty");
@@ -123,6 +124,13 @@ let nextId = 1;
 // [{ box: [x0,y0,x1,y1], done }] in source coords, shown while a multi-tile
 // scan is in flight (see recognizeTiled) -- empty otherwise.
 let tileOverlay = [];
+// Non-null while any recognizeTiled() call is in flight (whole-photo or
+// per-region) -- both the "is a scan running" flag and the means to cancel
+// it (cancelScanBtn / clearSession() / loading a new photo all call
+// .abort() on it). rotate() doesn't remap tileOverlay, so rotating mid-scan
+// would leave the live tile-progress outlines in stale pre-rotation
+// coordinates -- disable rotation instead (see updateButtons()).
+let scanAbortController = null;
 // Last message passed to setStatusMessage(), or null when idle (bare meta
 // line only). Tracked so updateMeta() -- called on every pan/zoom/rotate to
 // refresh the resolution/zoom% text -- can redraw alongside whatever
@@ -208,6 +216,10 @@ function persistState() {
 async function clearSession() {
   if (!img && detections.length === 0) return;
   if (!confirm("Clear the loaded photo and all boxes?")) return;
+
+  // Stop any in-flight scan rather than letting it keep running against a
+  // session that's about to be wiped out from under it (see scanAbortController).
+  if (scanAbortController) scanAbortController.abort();
 
   img = null;
   fileName = "";
@@ -608,9 +620,15 @@ function pruneEmpty() {
 
 function updateButtons() {
   const hasImage = !!img;
-  for (const b of [rotateLeftBtn, rotateRightBtn, runOcrBtn]) b.disabled = !hasImage;
+  for (const b of [rotateLeftBtn, rotateRightBtn]) b.disabled = !hasImage || !!scanAbortController;
+  // Mutual exclusion: only one scan (whole-photo or per-region) runs at a
+  // time -- both share the single scanAbortController slot, so letting a
+  // second one start would silently orphan whichever scan started first
+  // (Cancel/Clear would only ever be able to reach the newer one).
+  runOcrBtn.disabled = !hasImage || !!scanAbortController;
+  cancelScanBtn.disabled = !scanAbortController;
   deleteBtn.disabled = selectedId == null;
-  recognizePendingBtn.disabled = !detections.some((d) => d.score == null && !d.attempted);
+  recognizePendingBtn.disabled = !detections.some((d) => d.score == null && !d.attempted) || !!scanAbortController;
   pruneOverlappingBtn.disabled = computeOverlapWarnings().size === 0;
   pruneEmptyBtn.disabled = !detections.some((d) => d.score == null && d.attempted);
   goToGuideBtn.disabled = !detections.some((d) => d.score != null);
@@ -859,7 +877,7 @@ function rotatePoint([x, y], delta, oldW, oldH) {
 }
 
 function rotate(delta) {
-  if (!img) return;
+  if (!img || scanAbortController) return;
   const oldW = full.width;
   const oldH = full.height;
   detections = detections.map((d) => ({
@@ -876,7 +894,7 @@ rotateRightBtn.addEventListener("click", () => rotate(90));
 // Crops one tile from `full` at (x0,y0) (region-local origin) sized
 // (tx0,ty0)-(tx1,ty1) and posts it to /ocr, returning results translated
 // into full-image coordinates. Shared by every caller of recognizeTiled.
-async function recognizeTile(x0, y0, [tx0, ty0, tx1, ty1]) {
+async function recognizeTile(x0, y0, [tx0, ty0, tx1, ty1], signal) {
   const tw = tx1 - tx0;
   const th = ty1 - ty0;
   const cropCanvas = document.createElement("canvas");
@@ -885,7 +903,7 @@ async function recognizeTile(x0, y0, [tx0, ty0, tx1, ty1]) {
   cropCanvas.getContext("2d").drawImage(full, x0 + tx0, y0 + ty0, tw, th, 0, 0, tw, th);
   const blob = await new Promise((resolve) => cropCanvas.toBlob(resolve, "image/png"));
 
-  const resp = await fetch(`${BACKEND_URL}/ocr`, { method: "POST", body: blob });
+  const resp = await fetch(`${BACKEND_URL}/ocr`, { method: "POST", body: blob, signal });
   const found = resp.ok ? await resp.json() : [];
   // f.box is in tile-local coordinates; translate back to full-image space.
   return found.map((f) => ({
@@ -915,7 +933,16 @@ async function recognizeTile(x0, y0, [tx0, ty0, tx1, ty1]) {
 //     against the final return value once the scan completes (a box shown
 //     live from one tile can still get dropped by dedup once a later,
 //     higher-confidence tile finds the same box again).
-async function recognizeTiled(x0, y0, w, h, { onProgress, onTileFound } = {}) {
+//   - signal: an AbortSignal that stops the scan between tiles (see
+//     cancelScanBtn / clearSession()). Passed through to each tile's fetch
+//     so an already-in-flight request is actually cancelled too, freeing
+//     the backend's job queue rather than letting it run to completion for
+//     a result nobody wants. Checked again right after each tile's await
+//     resolves, in case that tile's response had already fully arrived the
+//     instant abort() was called -- fetch alone can't reject a promise
+//     that's already settled, so that result must be discarded explicitly
+//     instead of reaching onTileFound.
+async function recognizeTiled(x0, y0, w, h, { onProgress, onTileFound, signal } = {}) {
   if (w <= 0 || h <= 0) return [];
 
   const tiles = tileGrid(w, h, TILE_SIZE, {
@@ -941,7 +968,8 @@ async function recognizeTiled(x0, y0, w, h, { onProgress, onTileFound } = {}) {
   let allFound = [];
   try {
     for (let i = 0; i < tiles.length; i++) {
-      const tileFound = await recognizeTile(x0, y0, tiles[i]);
+      const tileFound = await recognizeTile(x0, y0, tiles[i], signal);
+      if (signal?.aborted) throw new DOMException("Scan cancelled", "AbortError");
       allFound = allFound.concat(tileFound);
       if (onTileFound) onTileFound(tileFound);
       if (showOverlay) {
@@ -968,6 +996,8 @@ runOcrBtn.addEventListener("click", async () => {
   if (!full) return;
   setStatusMessage("Running OCR…");
   runOcrBtn.disabled = true;
+  scanAbortController = new AbortController();
+  updateButtons(); // picks up scanAbortController -- disables rotation, enables Cancel scan
   // Only the auto-detected layer gets refreshed — boxes you drew or
   // recognized by hand (source "manual") survive a re-scan. Cleared up
   // front (rather than only at the end) so the live per-tile updates below
@@ -976,8 +1006,10 @@ runOcrBtn.addEventListener("click", async () => {
   const manualDetections = detections.filter((d) => d.source === "manual");
   detections = [...manualDetections];
   redraw();
+  let foundSoFar = 0; // tracked separately from `detections` -- Clear can reset that out from under a cancelled scan
   try {
     const found = await recognizeTiled(0, 0, full.width, full.height, {
+      signal: scanAbortController.signal,
       onProgress: (done, total) => {
         if (total > 1) setStatusMessage(`Scanning tile ${done}/${total}…`);
       },
@@ -986,6 +1018,7 @@ runOcrBtn.addEventListener("click", async () => {
       // recognizeTiled resolves with the final deduped set.
       onTileFound: (tileFound) => {
         const newDetections = tileFound.map((d) => ({ id: nextId++, ...d, source: "auto" }));
+        foundSoFar += newDetections.length;
         detections = [...detections, ...newDetections];
         redraw();
       },
@@ -998,11 +1031,27 @@ runOcrBtn.addEventListener("click", async () => {
     redraw();
     setStatusMessage(`Found ${autoDetections.length} box(es) (${manualDetections.length} manual box(es) kept)`);
   } catch (err) {
-    setStatusMessage(`OCR failed: ${err.message}`);
+    // img null means Clear ran mid-scan and already replaced this status
+    // with its own clean state -- don't resurrect a stale scan message
+    // over it. Boxes found before cancelling are left in place either way
+    // (kept on a plain Cancel, discarded along with everything else by
+    // Clear's own reset).
+    if (img) {
+      setStatusMessage(
+        err.name === "AbortError"
+          ? `Scan cancelled (kept ${foundSoFar} box(es) found before cancelling)`
+          : `OCR failed: ${err.message}`,
+      );
+    }
   } finally {
     runOcrBtn.disabled = false;
+    scanAbortController = null;
     updateButtons();
   }
+});
+
+cancelScanBtn.addEventListener("click", () => {
+  if (scanAbortController) scanAbortController.abort();
 });
 
 // Margin around the user's rough box, giving the detector room to find the
@@ -1018,7 +1067,7 @@ function marginFor(bounds) {
 // (the common case) or several (a looser region covering a cluttered/tiny-
 // label area). Crop it (with a small margin, letting the detector find the
 // tight text region itself) and run it through recognizeTiled.
-async function recognizeRegion(placeholder) {
+async function recognizeRegion(placeholder, signal) {
   const bounds = boundsOf(placeholder.box);
   const margin = marginFor(bounds);
   const x0 = Math.max(0, Math.floor(bounds.minX - margin));
@@ -1029,7 +1078,7 @@ async function recognizeRegion(placeholder) {
   const h = y1 - y0;
   const gotUpscaleBoost = Math.min(w, h) < RAPIDOCR_UPSCALE_SHORT_SIDE;
 
-  const found = await recognizeTiled(x0, y0, w, h);
+  const found = await recognizeTiled(x0, y0, w, h, { signal });
   const newDetections = found.map((d) => ({ id: nextId++, ...d, source: "manual" }));
   return { placeholder, found: newDetections, gotUpscaleBoost };
 }
@@ -1040,8 +1089,11 @@ async function recognizePendingBoxes() {
 
   setStatusMessage(`Recognizing ${pending.length} region(s)…`);
   recognizePendingBtn.disabled = true;
+  scanAbortController = new AbortController();
+  updateButtons(); // picks up scanAbortController -- disables rotation, enables Cancel scan
   try {
-    const results = await Promise.all(pending.map(recognizeRegion));
+    const signal = scanAbortController.signal;
+    const results = await Promise.all(pending.map((p) => recognizeRegion(p, signal)));
 
     let foundCount = 0;
     let emptyCount = 0;
@@ -1070,7 +1122,17 @@ async function recognizePendingBoxes() {
       );
     }
     setStatusMessage(parts.join("\n"));
+  } catch (err) {
+    // Promise.all rejects as soon as any one region's request does, so a
+    // cancel (or a genuine failure) here drops the whole batch -- placeholders
+    // stay pending ("?"), unlike the whole-photo scan's per-tile partial keep.
+    // img null means Clear ran mid-scan and already replaced this status with
+    // its own clean state -- don't resurrect a stale one over it.
+    if (img) {
+      setStatusMessage(err.name === "AbortError" ? "Recognition cancelled" : `Recognition failed: ${err.message}`);
+    }
   } finally {
+    scanAbortController = null;
     updateButtons();
     redraw();
   }
@@ -1229,6 +1291,9 @@ function setStatusMessage(msg) {
 fileInput.addEventListener("change", () => {
   const file = fileInput.files[0];
   if (!file) return;
+  // Stop any in-flight scan against the photo being replaced -- same
+  // reasoning as clearSession() (see scanAbortController).
+  if (scanAbortController) scanAbortController.abort();
   const url = URL.createObjectURL(file);
   const nextImg = new Image();
   nextImg.onload = () => {
