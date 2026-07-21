@@ -890,7 +890,11 @@ async function recognizeTile([x0, y0, x1, y1], signal) {
   const blob = await new Promise((resolve) => cropCanvas.toBlob(resolve, "image/png"));
 
   const resp = await fetch(`${BACKEND_URL}/ocr`, { method: "POST", body: blob, signal });
-  const found = resp.ok ? await resp.json() : [];
+  // Throwing rather than returning [] keeps a rejected tile (503 queue full,
+  // 413 oversized, 5xx) distinguishable from one that genuinely found no text
+  // -- the worker's catch counts it instead of reporting "nothing found".
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const found = await resp.json();
   // f.box is in tile-local coordinates; translate back to full-image space.
   return found.map((f) => ({
     box: f.box.map(([x, y]) => [x + x0, y + y0]),
@@ -990,6 +994,7 @@ async function ensureWorkerRunning() {
   let manualEmptyCount = 0;
   let manualNoBoostCount = 0;
   let errorCount = 0;
+  let firstError = null; // reported in the summary: "N failed" alone isn't actionable
 
   // Cleanup lives in finally so it always runs: a throw that left
   // scanAbortController non-null would wedge every future scan, since
@@ -1009,6 +1014,7 @@ async function ensureWorkerRunning() {
         // doesn't lose its placeholder bookkeeping or abort the rest.
         found = [];
         errorCount++;
+        firstError ??= err.message;
       }
       if (signal.aborted) break; // discard a result that arrived the instant abort() landed
 
@@ -1078,7 +1084,9 @@ async function ensureWorkerRunning() {
           + "(no scale boost, same as full image scan)",
         );
       }
-      if (errorCount > 0) parts.push(`${errorCount} tile(s) failed`);
+      if (errorCount > 0) {
+        parts.push(`${errorCount} tile(s) failed${firstError ? ` (${firstError})` : ""}`);
+      }
       if (cancelled) parts.push(`cancelled${leftoverCount > 0 ? ` (${leftoverCount} tile(s) left unscanned)` : ""}`);
       const overlapCount = computeOverlapWarnings().size;
       if (overlapCount > 0) parts.push(`${overlapCount} box(es) overlap — Prune overlapping to clean up`);
