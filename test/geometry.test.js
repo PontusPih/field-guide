@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   toSource, toDisplay, pointInPolygon, hitTestBoxes, distance, nearestWithinRadius,
-  boundsOf, overlapArea, selectNonOverlapping,
+  boundsOf, overlapArea, cornersOf, resizedBounds, normalizedRectBox,
 } from "../geometry.js";
 
 test("toSource/toDisplay round-trip at scale 1, no offset", () => {
@@ -133,30 +133,52 @@ test("overlapArea handles one rect fully containing another", () => {
   assert.equal(overlapArea(outer, inner), 100); // inner's full 10x10 area
 });
 
-test("selectNonOverlapping: keeps the higher-scored box from an overlapping pair", () => {
-  const items = [
-    { box: [[0, 0], [10, 0], [10, 10], [0, 10]], score: 0.6, tag: "low" },
-    { box: [[5, 5], [15, 5], [15, 15], [5, 15]], score: 0.9, tag: "high" },
-  ];
-  const kept = selectNonOverlapping(items);
-  assert.equal(kept.length, 1);
-  assert.equal(kept[0].tag, "high");
+test("cornersOf returns corners clockwise from the top-left", () => {
+  const bounds = { minX: 0, minY: 0, maxX: 10, maxY: 20 };
+  assert.deepEqual(cornersOf(bounds), [
+    { x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 20 }, { x: 0, y: 20 },
+  ]);
 });
 
-test("selectNonOverlapping: disjoint boxes are both kept regardless of score", () => {
-  const items = [
-    { box: [[0, 0], [10, 0], [10, 10], [0, 10]], score: 0.1 },
-    { box: [[100, 100], [110, 100], [110, 110], [100, 110]], score: 0.9 },
-  ];
-  assert.equal(selectNonOverlapping(items).length, 2);
+test("resizedBounds: dragging a corner leaves the opposite one fixed", () => {
+  const start = { minX: 0, minY: 0, maxX: 100, maxY: 100 };
+  // corner 0 is top-left, so the bottom-right (100,100) must not move
+  assert.deepEqual(resizedBounds(0, { x: 20, y: 30 }, start),
+    { x0: 20, y0: 30, x1: 100, y1: 100 });
+  // corner 2 is bottom-right, so the top-left (0,0) must not move
+  assert.deepEqual(resizedBounds(2, { x: 80, y: 70 }, start),
+    { x0: 0, y0: 0, x1: 80, y1: 70 });
 });
 
-test("selectNonOverlapping: null score ranks lowest and loses on overlap", () => {
-  const items = [
-    { box: [[0, 0], [10, 0], [10, 10], [0, 10]], score: null, tag: "pending" },
-    { box: [[5, 5], [15, 5], [15, 15], [5, 15]], score: 0.5, tag: "scored" },
+test("resizedBounds: each corner index pins the diagonally opposite point", () => {
+  const start = { minX: 0, minY: 0, maxX: 100, maxY: 100 };
+  const opposite = [
+    { x: 100, y: 100 }, { x: 0, y: 100 }, { x: 0, y: 0 }, { x: 100, y: 0 },
   ];
-  const kept = selectNonOverlapping(items);
-  assert.equal(kept.length, 1);
-  assert.equal(kept[0].tag, "scored");
+  for (let i = 0; i < 4; i++) {
+    const r = resizedBounds(i, { x: 50, y: 50 }, start);
+    const xs = [r.x0, r.x1];
+    const ys = [r.y0, r.y1];
+    assert.ok(xs.includes(opposite[i].x), `corner ${i} kept its opposite x`);
+    assert.ok(ys.includes(opposite[i].y), `corner ${i} kept its opposite y`);
+  }
+});
+
+test("normalizedRectBox: already-ordered input becomes four clockwise corners", () => {
+  assert.deepEqual(normalizedRectBox({ x0: 0, y0: 0, x1: 10, y1: 20 }),
+    [[0, 0], [10, 0], [10, 20], [0, 20]]);
+});
+
+test("normalizedRectBox: a drag crossing over its origin is normalized", () => {
+  // dragging up and to the left yields x1 < x0; the result must be identical
+  // to the same rectangle dragged the other way, or a resize past the
+  // opposite corner would produce an inverted box.
+  const backwards = normalizedRectBox({ x0: 10, y0: 20, x1: 0, y1: 0 });
+  const forwards = normalizedRectBox({ x0: 0, y0: 0, x1: 10, y1: 20 });
+  assert.deepEqual(backwards, forwards);
+});
+
+test("normalizedRectBox output round-trips through boundsOf", () => {
+  const b = normalizedRectBox({ x0: 30, y0: 5, x1: 12, y1: 40 });
+  assert.deepEqual(boundsOf(b), { minX: 12, minY: 5, maxX: 30, maxY: 40 });
 });

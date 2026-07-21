@@ -157,16 +157,25 @@ python3 -m http.server 8123        # frontend, from the repo root
 
 ## Step 7 — extract the pure helpers
 
-- [ ] **Change.** Move `normalizedRectBox`, `resizedBounds`, `cornersOf`, `marginFor`,
-      `colorFor`, `canvasLabelFor`, `listLabelFor` out of `ocr.js`. All are pure functions of
-      their arguments. Destination to be decided at the time — likely `detections.js`
-      alongside whatever collection operations move with them.
-- [ ] **Verify.** `node --check`, `npm test`, plus new Node tests for the moved functions
-      (they are pure, so this is the first real test coverage for logic that used to live in
-      `ocr.js`). Manually: draw, move, and resize a box; check the colour coding still tracks
-      confidence.
-- [ ] **Consider.** Where the line falls — pulling too much across turns a mechanical move
-      into a redesign.
+- [x] **Change.** Split by concern rather than into one file. `cornersOf`, `resizedBounds`
+      and `normalizedRectBox` are rectangle math and went to `geometry.js`, which is exactly
+      its stated job — no new module needed. `colorFor`, `canvasLabelFor` and `listLabelFor`
+      went to a new `detections.js`, which `selectNonOverlapping` also moved into, settling
+      the question left open in step 5. `marginFor` stayed in `ocr.js`: four lines, specific
+      to the recognize flow, and moving it would have made `detections.js` a grab bag.
+      `ocr.js` is down to 1247 lines.
+- [x] **Verify.** 77 tests, up from 62 — 15 new, the first coverage for logic that used to
+      live in `ocr.js`. Browser-checked too, since these functions are only reachable through
+      pointer interaction: draw, then resize by the top-left handle (the grabbed corner moves,
+      the opposite one stays pinned), then move (the box shifts, its size preserved), with the
+      list label reading "not yet recognized" in pending grey.
+      The new tests were then mutation-tested: swapping a corner case in `resizedBounds` and
+      making `colorFor` test truthiness instead of `!= null` both got caught, each by the test
+      written for it. Notably the simpler resize test did *not* catch the swap — it only
+      exercises corners 0 and 2 — which is why the exhaustive four-corner test is there.
+- [x] **Consider.** The line held. The temptation was a single `detections.js` holding
+      everything moved; splitting rect math from detection display kept each destination
+      honest, and `marginFor` staying put is the same judgement in the other direction.
 
 ## Deferred — the full `ocr.js` restructure
 

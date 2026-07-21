@@ -86,21 +86,39 @@ function nearestWithinRadius(point, candidates, radius) {
   return bestIndex;
 }
 
-// Greedy highest-score-first selection: keep an item unless its box's bounds
-// overlap one already kept. `items` is any array of `{box, score}` (score may
-// be null/undefined, ranked lowest). Backs ocr.js's "Prune overlapping".
-function selectNonOverlapping(items) {
-  const sorted = [...items].sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
-  const kept = [];
-  for (const item of sorted) {
-    const bounds = boundsOf(item.box);
-    const overlapsKept = kept.some((k) => overlapArea(bounds, boundsOf(k.box)) > 0);
-    if (!overlapsKept) kept.push(item);
+// Corner order: 0=top-left, 1=top-right, 2=bottom-right, 3=bottom-left —
+// used consistently for both drawing handles and resizing from one.
+function cornersOf(bounds) {
+  return [
+    { x: bounds.minX, y: bounds.minY },
+    { x: bounds.maxX, y: bounds.minY },
+    { x: bounds.maxX, y: bounds.maxY },
+    { x: bounds.minX, y: bounds.maxY },
+  ];
+}
+
+// Given which corner (see cornersOf) is dragged to source point `sp`, the
+// resulting {x0,y0,x1,y1} — the opposite corner stays fixed.
+// normalizedRectBox() handles the min/max swap if the drag crosses over it.
+function resizedBounds(handleIndex, sp, startBounds) {
+  const b = startBounds;
+  switch (handleIndex) {
+    case 0: return { x0: sp.x, y0: sp.y, x1: b.maxX, y1: b.maxY };
+    case 1: return { x0: b.minX, y0: sp.y, x1: sp.x, y1: b.maxY };
+    case 2: return { x0: b.minX, y0: b.minY, x1: sp.x, y1: sp.y };
+    default: return { x0: sp.x, y0: b.minY, x1: b.maxX, y1: sp.y };
   }
-  return kept;
+}
+
+// {x0,y0,x1,y1} in any corner order -> a four-corner box wound clockwise from
+// the top-left, which is the shape every detection's `box` uses.
+function normalizedRectBox(b) {
+  const x0 = Math.min(b.x0, b.x1), x1 = Math.max(b.x0, b.x1);
+  const y0 = Math.min(b.y0, b.y1), y1 = Math.max(b.y0, b.y1);
+  return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
 }
 
 export {
   toSource, toDisplay, pointInPolygon, hitTestBoxes, distance, nearestWithinRadius,
-  boundsOf, overlapArea, selectNonOverlapping,
+  boundsOf, overlapArea, cornersOf, resizedBounds, normalizedRectBox,
 };

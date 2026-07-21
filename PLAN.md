@@ -462,6 +462,15 @@ would hit the ~700MB ceiling directly. Implemented (`ocr.js`, `tiling.js`,
       Three buttons side by side there is tight — needs shorter labels and/or icons
       (e.g. an overlap glyph, an empty-box glyph) to keep the header compact
       horizontally. Not yet designed in detail (wording/iconography undecided).
+- [ ] **Invalidate and re-scan every box.** One action that resets all existing boxes to
+      pending — clearing `text`, `score`, and `attempted` — and enqueues them for
+      recognition again, without redrawing them by hand. Wanted when a first pass read
+      badly, when the photo has been rotated since, or when the backend or its settings
+      changed underneath the results. The queue already supports this shape: it is what
+      `recognizePendingBoxes()` does, applied to boxes that are no longer pending.
+      **Decided:** re-runs only the existing boxes, never the whole-photo pass; includes
+      hand-drawn boxes alongside auto-detected ones; and asks for confirmation first, since
+      it discards every recognized text in one click.
 
 **Benchmarks**
 Raw data behind the design above, kept for reference. All measured on this dev

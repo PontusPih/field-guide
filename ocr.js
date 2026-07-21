@@ -20,8 +20,11 @@
 
 import {
   toSource, toDisplay, hitTestBoxes, distance, nearestWithinRadius, pointInPolygon,
-  boundsOf, overlapArea, selectNonOverlapping,
+  boundsOf, overlapArea, cornersOf, resizedBounds, normalizedRectBox,
 } from "./geometry.js";
+import {
+  colorFor, canvasLabelFor, listLabelFor, selectNonOverlapping,
+} from "./detections.js";
 import { tileGrid } from "./tiling.js";
 import { resolveBackendUrl, BACKEND_URL_STORAGE_KEY, LOCALHOST_NAMES } from "./backend-config.js";
 import {
@@ -282,15 +285,6 @@ function zoomTo(newScale, anchorDisplayPt) {
   redrawCanvas(); // view-only: no list content changed, nothing to persist
 }
 
-function colorFor(detection) {
-  if (detection.score != null) {
-    if (detection.score >= 0.9) return "#2ecc71";
-    if (detection.score >= 0.5) return "#f1c40f";
-    return "#e74c3c";
-  }
-  return detection.attempted ? "#c0392b" : "#888"; // tried-and-failed vs never-tried
-}
-
 function strokeBoxPath(box) {
   ctx.beginPath();
   box.forEach((pt, i) => {
@@ -299,17 +293,6 @@ function strokeBoxPath(box) {
     else ctx.lineTo(d.x, d.y);
   });
   ctx.closePath();
-}
-
-// Canvas hover label: text only. The score shows in the results list.
-function canvasLabelFor(detection) {
-  if (detection.score != null) return detection.text;
-  return detection.attempted ? "no text found" : "not yet recognized";
-}
-
-function listLabelFor(detection) {
-  if (detection.score != null) return `${detection.text}  (score ${detection.score.toFixed(3)})`;
-  return detection.attempted ? "no text found" : "not yet recognized";
 }
 
 function drawLabelText(text, color, topLeft) {
@@ -366,17 +349,6 @@ function visibleDeleteHotspotIds() {
   return ids;
 }
 
-// Corner order: 0=top-left, 1=top-right, 2=bottom-right, 3=bottom-left —
-// used consistently for both drawing handles and resizing from one.
-function cornersOf(bounds) {
-  return [
-    { x: bounds.minX, y: bounds.minY },
-    { x: bounds.maxX, y: bounds.minY },
-    { x: bounds.maxX, y: bounds.maxY },
-    { x: bounds.minX, y: bounds.maxY },
-  ];
-}
-
 function selectedDetection() {
   return selectedId == null ? null : detections.find((d) => d.id === selectedId);
 }
@@ -397,19 +369,6 @@ function drawResizeHandles() {
     );
     ctx.fill();
     ctx.stroke();
-  }
-}
-
-// Given which corner (see cornersOf) is dragged to source point `sp`, the
-// resulting {x0,y0,x1,y1} — the opposite corner stays fixed.
-// normalizedRectBox() handles the min/max swap if the drag crosses over it.
-function resizedBounds(handleIndex, sp, startBounds) {
-  const b = startBounds;
-  switch (handleIndex) {
-    case 0: return { x0: sp.x, y0: sp.y, x1: b.maxX, y1: b.maxY };
-    case 1: return { x0: b.minX, y0: sp.y, x1: sp.x, y1: b.maxY };
-    case 2: return { x0: b.minX, y0: b.minY, x1: sp.x, y1: sp.y };
-    default: return { x0: sp.x, y0: b.minY, x1: b.maxX, y1: sp.y };
   }
 }
 
@@ -494,12 +453,6 @@ function redraw() {
   redrawCanvas();
   renderResultsList();
   persistState({ rotation, detections });
-}
-
-function normalizedRectBox(b) {
-  const x0 = Math.min(b.x0, b.x1), x1 = Math.max(b.x0, b.x1);
-  const y0 = Math.min(b.y0, b.y1), y1 = Math.max(b.y0, b.y1);
-  return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
 }
 
 // Detections whose bounding rects intersect — likely duplicate reads of the
