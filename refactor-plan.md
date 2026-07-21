@@ -92,15 +92,24 @@ python3 -m http.server 8123        # frontend, from the repo root
 
 ## Step 4 — small hygiene
 
-- [ ] **Change.** Drop the redundant `"use strict"` from all five ES modules. Replace
-      `tileOverlay.find((t) => t.box === item.box)` (matches by array identity, works only
-      because the same array object is pushed to both structures) with an index stored on the
-      queue item. Rename `ensureWorkerRunning()` to `drainScanQueue()`. Handle
-      `cropCanvas.toBlob()` calling back with `null`.
-- [ ] **Verify.** `node --check`, `npm test`. Manually: one full scan, confirming the tile
-      overlay still fills in solid as tiles complete.
-- [ ] **Consider.** Whether to do these as one commit or split the rename out — it touches
-      every call site and will dominate the diff.
+- [x] **Change.** Dropped the redundant `"use strict"` from all nine ES modules (source and
+      tests). Replaced `tileOverlay.find((t) => t.box === item.box)` — an O(n) search that
+      worked only because the same array object was pushed to both structures — by having
+      each queue item hold its own overlay entry, so marking a tile done is a direct write.
+      `cropCanvas.toBlob()` returning `null` now throws instead of posting an empty body,
+      which the worker would otherwise have read as a tile that found nothing.
+      **Rename not done** — see Consider.
+- [x] **Verify.** `node --check` clean on every file; `npm test` 62/62. Three browser checks,
+      since none of this has unit coverage: a full scan (exercises the new overlay write),
+      cancel-then-rescan (exercises overlay entries being reused on carry-over), and
+      `guide.html` (touched only by the `"use strict"` removal, but largely outside the unit
+      tests) — 1464 modules parsed, cards rendered, no errors.
+- [x] **Consider.** The rename `ensureWorkerRunning()` -> `drainScanQueue()` was dropped,
+      reversing the earlier recommendation. `ensureWorkerRunning()` states the contract a
+      caller gets: idempotent, starts a worker only if one isn't already running.
+      `drainScanQueue()` reads as "drain now", which is precisely what the function does not
+      do when a drain is already in progress. The existing name is the more accurate one, so
+      churning ten call sites would have made the code slightly worse.
 
 ## Step 5 — split tiling out of `geometry.js`
 
