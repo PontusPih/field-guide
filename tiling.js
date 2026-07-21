@@ -5,6 +5,30 @@
 // label isn't lost at a seam -- and nothing about the canvas or how it is
 // drawn. Pure and DOM-free, so it is testable with `node --test`.
 
+const TILE_SIZE_STORAGE_KEY = "fieldGuideTileSize";
+const DEFAULT_PROD_TILE_SIZE = 736;
+// Infinity keeps every region a single cell (see axisTiles), so a dev scan
+// sends one request covering the whole region -- pair with OCR_MAX_DIMENSION=0
+// server-side.
+const DEFAULT_DEV_TILE_SIZE = Infinity;
+
+// Tile size in source px: a localStorage override wins, otherwise the dev or
+// prod default. Takes `isLocalDev` rather than a hostname so this module needs
+// no opinion on which hostnames count as local -- backend-config.js owns that
+// list, and ocr.js passes the same answer to both.
+//
+// The override is what makes the tiled path reachable in dev, where it is
+// otherwise unreachable at any region size:
+//   `localStorage.setItem("fieldGuideTileSize", "300")`
+// A non-numeric or non-positive override is ignored rather than trusted, since
+// a bad value would otherwise disable tiling silently.
+// `storedOverride` is null/undefined when absent (matches Storage.getItem()).
+function resolveTileSize({ isLocalDev, storedOverride }) {
+  const parsed = Number(storedOverride);
+  if (storedOverride != null && storedOverride !== "" && parsed > 0) return parsed;
+  return isLocalDev ? DEFAULT_DEV_TILE_SIZE : DEFAULT_PROD_TILE_SIZE;
+}
+
 // Start positions covering [0, total) with cells of size `tile`, splitting
 // one axis of a large OCR region into tile-sized pieces (see PLAN.md, "Tiled
 // scanning for large images").
@@ -41,4 +65,7 @@ function tileGrid(width, height, tile, opts = {}) {
   return boxes;
 }
 
-export { axisTiles, tileGrid };
+export {
+  axisTiles, tileGrid, resolveTileSize,
+  TILE_SIZE_STORAGE_KEY, DEFAULT_DEV_TILE_SIZE, DEFAULT_PROD_TILE_SIZE,
+};

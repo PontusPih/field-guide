@@ -25,7 +25,7 @@ import {
 import {
   colorFor, canvasLabelFor, listLabelFor, selectNonOverlapping,
 } from "./detections.js";
-import { tileGrid } from "./tiling.js";
+import { tileGrid, resolveTileSize, TILE_SIZE_STORAGE_KEY } from "./tiling.js";
 import { resolveBackendUrl, BACKEND_URL_STORAGE_KEY, LOCALHOST_NAMES } from "./backend-config.js";
 import {
   persistImage, persistState, loadSession, clearStoredSession,
@@ -35,6 +35,7 @@ import {
 // Dev skips the size limits a memory-constrained prod backend needs -- see
 // TILE_SIZE below, and OCR_MAX_DIMENSION server-side.
 const IS_LOCAL_DEV = LOCALHOST_NAMES.includes(location.hostname);
+
 
 const fileInput = document.getElementById("file");
 const display = document.getElementById("stage");
@@ -83,13 +84,16 @@ const RESIZE_HANDLE_HIT_RADIUS = 12; // display px, how close a click must land 
 const RAPIDOCR_UPSCALE_SHORT_SIDE = 736;
 
 // Tiling config for large regions (PLAN.md, "Tiled scanning for large
-// images"). TILE_SIZE matches RAPIDOCR_UPSCALE_SHORT_SIDE -- the size det
-// never rescales -- but stays a separate constant: that one describes the
+// images"). The prod default matches RAPIDOCR_UPSCALE_SHORT_SIDE -- the size
+// det never rescales -- but stays a separate constant: that one describes the
 // backend's fixed floor, this one is the client's tunable choice, raised for
-// a backend with more memory headroom. In dev, Infinity fails tileGrid's
-// single-cell check, so a scan sends one request covering the whole region
-// (pair with OCR_MAX_DIMENSION=0 server-side).
-const TILE_SIZE = IS_LOCAL_DEV ? Infinity : 736;
+// a backend with more memory headroom. Dev defaults to Infinity, which makes
+// every region a single cell; the localStorage override is how the tiled path
+// is reached in dev, and is what the browser tiling spec sets.
+const TILE_SIZE = resolveTileSize({
+  isLocalDev: IS_LOCAL_DEV,
+  storedOverride: localStorage.getItem(TILE_SIZE_STORAGE_KEY),
+});
 const TILE_OVERLAP_FRAC = 0.15;
 // Regions up to this multiple of TILE_SIZE run as one oversized tile instead
 // of a grid. Must stay under the backend's OCR_MAX_DIMENSION gate (default

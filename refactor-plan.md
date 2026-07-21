@@ -187,11 +187,21 @@ by module-level mutable state (`detections`, `view`, `img`, `full`, `selectedId`
 introducing an explicit state module with subscribe/emit first, then dividing into
 `canvas-view.js` / `interaction.js` / `scan.js` / `results-list.js`.
 
-That is a real refactor of code with no test coverage, verified only by clicking. **Open
-question for the author:** whether to add browser-level test tooling (Playwright or similar)
-before attempting it. That means adding a dependency and a build step, which the repo
-conventions rule out without an explicit decision. Until that is settled, this stays
-deferred rather than scheduled.
+That is a real refactor of code with no test coverage, verified only by clicking.
+
+**The tooling question is settled.** `npm run test:browser` (July 2026) drives headless
+Chrome over the DevTools Protocol using only Node's own APIs — no dependency, no build
+step, so the repo conventions hold. It owns every resource it uses: its own static server
+and Chrome instance on OS-assigned ports, a throwaway profile removed on exit, and it
+skips itself when no Chrome is installed. Waits poll for an observable condition; there
+are no fixed sleeps.
+
+What remains before the restructure is **coverage, not tooling**. `test/browser/` holds one
+spec, for tiling. The restructure needs characterization specs written and green against
+the *current* code first — box drawing, resize, move, delete, select, prune, clear,
+session restore, scan cancel/resume — since a spec written afterwards only proves the code
+does what it now does. That is the next step, and it is now ordinary work rather than an
+open question.
 
 ## Related backlog
 

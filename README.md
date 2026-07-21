@@ -35,15 +35,32 @@ browser console: `localStorage.setItem("fieldGuideBackendUrl", "https://...")`
 — clear it with `localStorage.removeItem("fieldGuideBackendUrl")` to go back
 to auto-detection.
 
-Running locally also relaxes Render's 512MB-tier-driven limits automatically
-on the frontend side (no tiling — one request per scan instead of ~736px
-pieces); start the backend with `OCR_MAX_DIMENSION=0` too so it doesn't reject
-that now-untiled request — see `backend/README.md`, "Local development".
+Running locally also relaxes the production tier's memory-driven limits
+automatically on the frontend side (no tiling — one request per scan instead of
+~736px pieces); start the backend with `OCR_MAX_DIMENSION=0` too so it doesn't
+reject that now-untiled request — see `backend/README.md`, "Local development".
+
+Because the local default disables tiling entirely, the tiled path is not
+reachable in dev at any region size. To exercise it, set a tile size explicitly:
+`localStorage.setItem("fieldGuideTileSize", "300")` — clear it with
+`localStorage.removeItem("fieldGuideTileSize")`. This is the seam the browser
+tiling spec uses, and the way to reproduce a production-only tiling problem
+locally.
 
 ## Tests
 
 ```
-npm test              # frontend: core.js / geometry.js / tiling.js (Node's built-in test runner)
+npm test              # frontend units: pure modules, no browser (Node's built-in test runner)
+npm run test:browser  # frontend in a real browser — see below
 cd backend
 python -m unittest discover -s test -v   # backend, after installing its deps — see backend/README.md
 ```
+
+`npm test` covers the pure modules. It cannot reach `ocr.js`, which is DOM-driven.
+
+`npm run test:browser` drives headless Chrome over the DevTools Protocol, with no
+dependency beyond Node itself. Each run starts its own static server on an
+OS-assigned port, its own Chrome on a fresh throwaway profile, and removes both
+afterwards — it never touches a dev server or browser profile already running.
+It skips itself if no Chrome is installed; set `CHROME_PATH` to point at a
+specific one. `/ocr` is stubbed in the page, so the backend need not be running.
