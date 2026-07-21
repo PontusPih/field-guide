@@ -90,6 +90,16 @@ A user with a stack of unknown boards enters/scans their module numbers. The app
       (`core.js`'s `buildExport`); board rows show a `×N` count whenever N>1. `ocr.js`'s
       "Go to identification" handoff no longer dedupes recognized text, so a real pile of
       duplicate boards carries its true count through to this.
+- [ ] **Ghost card/output preview when the input is empty.** `guide.html` currently
+      pre-fills the input textarea with a full sample stack (real placeholder text the
+      user has to delete before entering their own). Instead: when the input is empty,
+      show a smaller/lighter demo set of module numbers rendered as a "ghost card" in the
+      results column (faded/placeholder-styled, visually distinct from a real result) plus
+      a matching ghost export-file preview — illustrating what the tool produces without
+      committing real sample text into the input. Disappears as soon as real text is
+      typed; reappears if the input is cleared back to empty. Not yet designed in detail —
+      needs deciding the demo module set, how the ghost card is visually distinguished,
+      and how it replaces the current sample-stack-in-textarea approach.
 
 ### Phase 2 — image recognition
 - [x] Capture / upload a board photo — first built as `ocr-poc.html`/`ocr-poc.js`:
@@ -135,6 +145,13 @@ spending cap/kill-switch), not pay-per-use exposure.
 - [ ] Fuzzy-match recognized text against the real ~1464 module numbers in
       `field-guide-02.txt` (revive the Tesseract POC's Levenshtein approach) — catch
       near-misses and filter junk before anything reaches the user.
+- [ ] Let the user edit a found box's recognized text directly — a human eye can often
+      correct a box RapidOCR found but slightly misread (one wrong character) without
+      needing to redraw/rescan it. Not yet designed: the edit UI (inline in the results
+      list vs. a field on the box's detail/hover state), whether an edited detection's
+      `source` should count as "manual"/trusted for the `guide.js` handoff, and whether
+      `score` should be cleared/flagged once text has been hand-edited (it no longer
+      reflects what's actually displayed).
 
 **Multi-image workflow**
 - [ ] Support uploading several images in one session
@@ -276,12 +293,13 @@ spending cap/kill-switch), not pay-per-use exposure.
 - [ ] TLS termination + routing (own subdomain vs. a path under field-guide.pdp8.se)
 
 **Tiled scanning for large images**
-Design worked out to fix the memory ceiling above without requiring a bigger host.
-`recognizeRegion()` today sends whatever the user draws as one crop, at the photo's
-native resolution (`ocr.js` never resizes on capture) — so a box drawn around a whole
-12MP phone photo would hit the ~700MB ceiling directly. Not yet implemented.
+Fixes the memory ceiling above without requiring a bigger host. `recognizeRegion()`
+used to send whatever the user drew as one crop, at the photo's native resolution
+(`ocr.js` never resizes on capture) — so a box drawn around a whole 12MP phone photo
+would hit the ~700MB ceiling directly. Implemented (`ocr.js`, `geometry.js`,
+`server.py`).
 
-- [ ] **Decided: tile client-side, not server-side.** `recognizeRegion()` already
+- [x] **Decided: tile client-side, not server-side.** `recognizeRegion()` already
       crops a region, POSTs it, and translates the returned crop-local boxes into
       full-image coordinates — auto-splitting one large drawn region into a grid of
       tiles through that same pipeline is a natural extension. Doing it server-side
@@ -291,7 +309,7 @@ native resolution (`ocr.js` never resizes on capture) — so a box drawn around 
       gets progressive per-tile results for free (relevant given the ~10s full-frame
       estimate below) and naturally paces requests one at a time against the
       backend's single-worker job queue.
-- [ ] **Tile size: 736x736 squares, not larger.** 736 is det's own upscale floor —
+- [x] **Tile size: 736x736 squares, not larger.** 736 is det's own upscale floor —
       smaller tiles cost the same as 736 (nothing saved going below), and a larger
       tile (1140, benchmarked as a "fewer, bigger tiles" alternative) came out
       strictly worse, not a trade-off: half as many tiles but 1.85x the total wall
@@ -303,29 +321,21 @@ native resolution (`ocr.js` never resizes on capture) — so a box drawn around 
       across both example images (30 tiles, 50%-overlap grid): mean 0.35s, p90
       0.62s, p99 0.71s — content-dependent (empty-background tiles ~0.14s,
       text-dense tiles up to ~0.71s).
-- [ ] **Graduated single-tile threshold.** A region only modestly larger than one
+- [x] **Graduated single-tile threshold.** A region only modestly larger than one
       tile (e.g. 800x800) must not be forced into a multi-tile grid — the overlap
       needed to avoid missing text at the seam approaches 90%+ at that size,
       multiplying cost for no benefit. Regions up to roughly 1.3-1.5x the tile size
       in both dimensions should run as a single, modestly-oversized tile instead of
       splitting; only clearly-larger regions get the grid treatment.
-- [ ] **Grid layout: even redistribution, last tile snapped to the far edge**, so no
+- [x] **Grid layout: even redistribution, last tile snapped to the far edge**, so no
       axis ever produces a sliver/leftover tile smaller than the target size.
       Computed independently per axis (row count and column count don't depend on
       each other), which handles odd/elongated aspect ratios without needing
-      non-square tiles:
-      ```
-      function tileStarts(total, tile, overlapFrac = 0.15) {
-        const step = Math.max(1, Math.floor(tile * (1 - overlapFrac)));
-        const starts = [];
-        for (let s = 0; s <= total - tile; s += step) starts.push(s);
-        if (starts[starts.length - 1] !== total - tile) starts.push(total - tile);
-        return starts;
-      }
-      ```
-      Needs an explicit `total <= tile` early-out (single tile, no split) that the
-      snippet above doesn't yet handle — feeds the single-tile threshold above.
-- [ ] **Server-side hard dimension limit**, independent of whether client-side
+      non-square tiles. Implemented as `geometry.js`'s `axisTiles`/`tileGrid`
+      (Node-tested, `test/geometry.test.js`) — folds the single-tile threshold above
+      into the same function (a region within `tile * singleCellFactor` returns one
+      cell spanning the whole axis, subsuming the plain `total <= tile` case too).
+- [x] **Server-side hard dimension limit**, independent of whether client-side
       tiling behaves correctly. Reject (413) any `/ocr` upload with
       `max(width, height)` over a configured cap (~1200px, comfortably above the
       largest expected single-tile case) before RapidOCR ever sees the bytes.
@@ -335,33 +345,64 @@ native resolution (`ocr.js` never resizes on capture) — so a box drawn around 
       Global resize, then scaled back *up* past the original cap by det's own
       internal resize, defeating the intended limit. An explicit pre-check on
       decoded dimensions doesn't have that failure mode.
-- [ ] **Dedup: duplicate removal only, no cross-tile box stitching.** Overlapping
+- [x] **Dedup: duplicate removal only, no cross-tile box stitching.** Overlapping
       tiles will often detect the same complete box twice; translate every tile's
-      boxes to full-image coordinates, then drop any box whose IoU against an
-      already-kept box exceeds a threshold (~0.5), keeping the higher-confidence
-      one. Deliberately does not attempt to reconstruct a box that got cut in half
-      at a tile seam — that surfaces as a visible partial/garbled detection, an
-      acceptable failure the user can fix by redrawing the selection so the seam
-      doesn't fall on a label.
-- [ ] **Configurability — every level identified during this investigation must be
-      a config knob, not a hardcoded assumption**, so a future deploy on a bigger
-      host can trade the current conservative defaults for bigger tiles / more
-      throughput without a code change:
-      - Tile size, overlap fraction, and the single-tile threshold multiplier — the
-        numbers above are pinned to Render's 512MB free tier; a bigger box should be
-        able to raise the tile size (fewer, cheaper-per-pixel-of-progress tiles, per
-        the ~200MB/Mpx model above) via config, not a code edit.
-      - The server-side hard dimension cap (~1200px default) — same reasoning.
-      - `OCR_WORKERS` (already an env var) — more workers only helps on a host with
-        more than one core; stays at 1 on Render's single-core free tier.
-      - ONNX Runtime's `intra_op_num_threads`/`inter_op_num_threads` — currently
-        always left at RapidOCR's own default (-1, ORT auto-detects, which
-        over-provisions inside a container since `os.cpu_count()` sees the host's
-        full core count, not any cgroup limit). Not currently wired to config in
-        `server.py` at all; needs env vars alongside `OCR_WORKERS`.
-      - OpenCV's own internal thread pool (`cv2.setNumThreads()`) — separate from
-        ONNX Runtime's thread settings, not touched by them, and not currently set
-        anywhere in `server.py`. Same over-provisioning risk; needs its own knob.
+      boxes to full-image coordinates, then drop any box whose bounds overlap an
+      already-kept box at all, keeping the higher-confidence one — greedy NMS,
+      simpler than an IoU threshold in the end (`geometry.js`'s `selectNonOverlapping`,
+      which also replaced the ad hoc logic `ocr.js`'s pre-existing manual "prune
+      overlapping" button used, so both share one implementation now). Deliberately
+      does not attempt to reconstruct a box that got cut in half at a tile seam —
+      that surfaces as a visible partial/garbled detection, an acceptable failure
+      the user can fix by redrawing the selection so the seam doesn't fall on a label.
+- [x] **Configurability, server-side** — every backend-side level identified during
+      this investigation is now a config knob, not a hardcoded assumption:
+      - The server-side hard dimension cap — `OCR_MAX_DIMENSION` env var (default
+        1200; non-positive disables it entirely, e.g. for local dev, see below).
+      - `OCR_WORKERS` (pre-existing) — more workers only helps on a host with more
+        than one core; stays at 1 on Render's single-core free tier.
+      - ONNX Runtime's `intra_op_num_threads`/`inter_op_num_threads` — `OCR_INTRA_OP_THREADS`/
+        `OCR_INTER_OP_THREADS` env vars, `-1` (RapidOCR's own "unset, auto-detect"
+        sentinel) by default. Auto-detect over-provisions inside a *CPU-restricted*
+        container specifically (`os.cpu_count()` sees the host's full core count, not
+        any cgroup limit) — confirmed directly: pinning to 1 on a single-core-pinned
+        container measured ~22x faster than leaving this at -1 (see Benchmarks).
+      - OpenCV's own internal thread pool (`cv2.setNumThreads()`, separate from ONNX
+        Runtime's settings) — `OCR_CV2_THREADS` env var, same `-1` convention.
+- [ ] **Configurability, client-side — tile size, overlap fraction, and the
+      single-tile threshold multiplier are still plain hardcoded constants in
+      `ocr.js`** (`TILE_SIZE`/`TILE_OVERLAP_FRAC`/`TILE_SINGLE_CELL_FACTOR`), not a
+      runtime config knob — changing them for a bigger production host still needs a
+      code edit. Partial exception: `TILE_SIZE` already auto-detects local dev
+      (`IS_LOCAL_DEV`, hostname-based like `BACKEND_URL`) and switches to `Infinity`
+      (no tiling) there, but that's a fixed dev/prod split, not a general-purpose
+      override the way `BACKEND_URL`'s `localStorage` mechanism is. Would need the
+      same treatment (or similar) to let a bigger production host raise these without
+      editing source.
+
+**Known follow-ups from the implementation above**
+- [ ] Rotating the photo while a tiled scan is in flight desyncs the live tile-outline
+      overlay: `rotate()` remaps `detections`' boxes via `rotatePoint()` but not
+      `tileOverlay` (added for live per-tile progress), leaving the outlines in stale
+      pre-rotation coordinates once rotated. Simplest fix is probably disabling
+      `rotateLeftBtn`/`rotateRightBtn` while a scan is in flight (matching how `runOcrBtn`
+      etc. already get disabled during processing) rather than live-remapping the overlay.
+- [ ] "Clear scan" doesn't cancel an in-flight tiled scan: `recognizeTiled`'s sequential
+      per-tile loop keeps awaiting/sending remaining tiles after the user clears, and
+      whatever comes back still gets applied (or at least keeps occupying the backend's
+      job queue) regardless. Needs some form of cancellation — e.g. a "scan generation"
+      counter checked after each `await`, or an `AbortController` wired into the tile
+      fetches — so Clear (or loading a new image) can signal the loop to stop early and
+      discard results. Not yet designed in detail.
+- [ ] Too easy to click "Run OCR" and lose work: it replaces the whole auto-detected
+      layer on every click (`source === "manual"` boxes survive, but anything done to
+      auto-detected ones — deleted an incorrect box, moved/resized one to be more
+      accurate — gets wiped and regenerated fresh, since only literal `source ===
+      "manual"` is preserved). Add a `confirm()` dialog before running if there's
+      something at risk (matching the existing pattern `clearSession()` already uses,
+      "Clear the loaded photo and all boxes?") — manual boxes present, and/or evidence
+      auto-detected boxes have been deleted since the last scan. Not yet designed in
+      detail (deciding how to detect "deleted since last scan" specifically).
 
 **Benchmarks**
 Raw data behind the design above, kept for reference. All measured on this dev
