@@ -6,6 +6,6 @@
   "description": "PDP-11 Q-bus/UNIBUS module identifier (client-side, GitHub Pages).",
   "scripts": {
     "test": "node --test test/*.test.js",
-    "test:browser": "node --test test/browser/*.spec.mjs"
+    "test:browser": "node --test $([ \"$HEADED\" = 1 ] && echo --test-concurrency=1) test/browser/*.spec.mjs"
   }
 }

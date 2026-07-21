@@ -73,9 +73,17 @@ describe("scan cancel and resume", { skip: chromePath ? false : "no Chrome found
     await loadSyntheticPhoto(page);
 
     await page.evaluate(`document.getElementById("runOcr").click(); true`);
-    await page.waitFor(`!document.getElementById("cancelScan").disabled`, "scan to start");
-    assert.equal(await page.evaluate(`document.getElementById("rotateLeft").disabled`), true,
-      "rotation should be disabled while a scan is in flight");
+    // Both flags flip together, synchronously, inside the same
+    // updateButtons() call -- checked in one poll so there's no round-trip
+    // gap in which the (stubbed, time-limited) scan could finish between
+    // confirming it started and checking rotation was disabled meanwhile.
+    // A separate follow-up check here previously raced the stub's delay
+    // under SLOWMO, and could in principle have raced it anywhere, given a
+    // slow enough machine.
+    await page.waitFor(
+      `!document.getElementById("cancelScan").disabled && document.getElementById("rotateLeft").disabled`,
+      "scan to start with rotation disabled",
+    );
 
     await page.evaluate(`document.getElementById("cancelScan").click(); true`);
     await scanIdle(page);

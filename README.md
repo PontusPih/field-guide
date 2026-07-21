@@ -64,3 +64,9 @@ OS-assigned port, its own Chrome on a fresh throwaway profile, and removes both
 afterwards — it never touches a dev server or browser profile already running.
 It skips itself if no Chrome is installed; set `CHROME_PATH` to point at a
 specific one. `/ocr` is stubbed in the page, so the backend need not be running.
+Set `HEADED=1` to watch a real, visible Chrome window instead of running headless, and
+`SLOWMO=250` (ms) to pause after mouse/keyboard input and page loads so a drag or click is
+slow enough to actually see. It deliberately leaves other CDP traffic (state reads,
+`element.click()`) at full speed — some specs stub a short in-page timer to force a
+specific ordering, and slowing that traffic down would eat into the window the timer needs.
+Spec files run one at a time either way, so a headed run shows a single window.

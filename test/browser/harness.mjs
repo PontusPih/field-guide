@@ -11,7 +11,12 @@
 // are no fixed sleeps: a sleep long enough to be reliable on a loaded machine
 // is long enough to hide a regression on an idle one.
 //
-// Used by the *.spec.mjs files here. Run them with `npm run test:browser`.
+// Used by the *.spec.mjs files here. Run them with `npm run test:browser`, or
+// `HEADED=1 npm run test:browser` to watch a real, visible Chrome window
+// instead of running headless. Add `SLOWMO=250` (ms) to pause after every
+// action so there's actually something to watch. `npm run test:browser`
+// itself runs spec files one at a time (--test-concurrency=1), so a headed
+// run shows one window's worth of activity rather than several at once.
 
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
@@ -97,6 +102,21 @@ function startStaticServer() {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// SLOWMO=<ms> pauses after a physical input action (mouse/keyboard dispatch,
+// page navigation) resolves, so a HEADED=1 run is slow enough to actually
+// watch a drag or click land instead of flashing past. Deliberately not
+// applied to Runtime.evaluate: specs use it for both real UI actions
+// (element.click()) and pure state reads/polling, and several specs stub a
+// short in-page timer (e.g. a fake network delay) to force a specific
+// ordering. Slowing every evaluate() shrinks how much real time that
+// in-page timer gets before the test's next check lands -- which broke a
+// scan-cancellation spec at SLOWMO=250, since the polling round-trips ate
+// into the 300ms window the test needed the scan to still be running.
+const SLOWMO_MS = Number(process.env.SLOWMO) || 0;
+const SLOWMO_METHODS = new Set([
+  "Input.dispatchMouseEvent", "Input.dispatchKeyEvent", "Page.navigate",
+]);
+
 // Chrome writes its assigned port to DevToolsActivePort once the debugging
 // socket is listening; polling for that file is what replaces "sleep and hope
 // it booted".
@@ -156,10 +176,12 @@ class Page {
     }
   }
 
-  send(method, params = {}) {
+  async send(method, params = {}) {
     const id = ++this.#nextId;
     this.#ws.send(JSON.stringify({ id, method, params }));
-    return new Promise((resolve, reject) => this.#pending.set(id, { resolve, reject }));
+    const result = await new Promise((resolve, reject) => this.#pending.set(id, { resolve, reject }));
+    if (SLOWMO_MS > 0 && SLOWMO_METHODS.has(method)) await sleep(SLOWMO_MS);
+    return result;
   }
 
   async evaluate(expression) {
@@ -204,9 +226,14 @@ async function launch() {
   const server = await startStaticServer();
   const profileDir = await mkdtemp(join(profileParentFor(chromePath), "field-guide-test-"));
 
+  // HEADED=1 opens a real, visible browser window instead of running
+  // headless -- useful for watching a spec run rather than reading its
+  // output after the fact. Headless-only flags are skipped in that mode:
+  // --disable-gpu exists to dodge headless-specific rendering issues and has
+  // no reason to apply to a normal window.
+  const headed = process.env.HEADED === "1";
   const chrome = spawn(chromePath, [
-    "--headless=new",
-    "--disable-gpu",
+    ...(headed ? ["--window-size=1400,1000"] : ["--headless=new", "--disable-gpu"]),
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-extensions",
