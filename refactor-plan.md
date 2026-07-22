@@ -498,7 +498,11 @@ consumer. Options, to decide together:
   found direct callbacks sufficient. Not recommended unless a concrete ordering problem appears.
 
 Leaning **(b)** — three consumers now share the same flush set, which is the threshold that
-turns it from premature churn into a real simplification. Left for the author's call.
+turns it from premature churn into a real simplification.
+
+**Status: parked, not scheduled.** The author is sleeping on it. The restructure is complete and
+green as-is; this is an optional polish pass to pick up (or drop) later, kept here so the option
+and its rationale aren't lost. Revisit before the next structural change to `ocr.js`.
 
 ## Related backlog
 

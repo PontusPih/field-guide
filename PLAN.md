@@ -157,17 +157,37 @@ spending cap/kill-switch), not pay-per-use exposure.
       reflects what's actually displayed).
 
 **Multi-image workflow**
-- [ ] Support uploading several images in one session
+
+A real board pile often won't fit in one photo, so the goal is to scan several and combine
+them into one identification. Combining is nearly free at the handoff — `guide.js` already
+takes a newline list and counts quantities — so the work is in the data model and the UI, not
+the merge. The shaping decision is whether earlier photos stay re-editable or results only
+accumulate forward; that picks the data model. **Chosen: the structural stepping stone** —
+commit to a multi-session state shape up front (`state.sessions = [{ id, img, full, rotation,
+view, detections, nextId }, …]` plus an `activeId`) but reveal it through the UI
+incrementally, newest-session-only first. That shape *is* the full data model, so later phases
+add only UI, no data rework. The lossy alternative — accumulate just the recognized numbers of
+finished photos and discard their pixels/boxes — is cheaper now but a partial dead-end,
+replaced rather than extended once re-editing an earlier photo is wanted. The `ocr.js`
+restructure (now complete — see `refactor-plan.md`) is what makes the stepping stone cheap:
+repointing the modules onto the active session is the step-9 rename pattern, not a rewrite.
+Planned, not started.
+
+- [ ] Repoint the modules onto an active session — `state.<field>` → `state.active.<field>`
+      across `canvas-view`/`interaction`/`results-list`/`scan`/`thumbnails` (string/comment-aware
+      rename, backed by the 85 + 32 tests) — and make "load next photo" append a session
+      instead of overwriting the single slot.
 - [ ] Curate one combined list of found labels, each tagged with which image and the
-      coordinates within that image it came from
+      coordinates within that image it came from; the handoff unions recognized text across
+      all sessions.
 - [ ] Resumable per-image sessions, keyed by a SHA-256 checksum of the image (native
       `crypto.subtle.digest`, no library, single-digit ms for a multi-MB photo — MD5 isn't
       available in that API, and isn't needed). Today's single-slot IndexedDB persistence
       (`ocr.js`: one image + its boxes under fixed keys, overwritten by the next upload)
-      would become multiple records keyed by hash, plus UI to list/pick which past scan to
-      resume. Deliberately not built yet — holding off until this phase is actually
-      underway, since it's a real restructure (storage model + a picker UI), not a small
-      tweak on top of the current single-image persistence.
+      becomes multiple records keyed by hash.
+- [ ] Session-switcher UI: list the photos in the current pile, pick which to view/edit, with
+      a running "N boards across M photos" summary. This is the increment that turns the
+      single-image-UI stepping stone into full multi-image.
 
 **Integration**
 - [x] Decide where this lives in the shipped app — `index.html` is now a landing page
