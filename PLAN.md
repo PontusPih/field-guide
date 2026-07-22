@@ -471,6 +471,15 @@ would hit the ~700MB ceiling directly. Implemented (`ocr.js`, `tiling.js`,
       **Decided:** re-runs only the existing boxes, never the whole-photo pass; includes
       hand-drawn boxes alongside auto-detected ones; and asks for confirmation first, since
       it discards every recognized text in one click.
+- [ ] **Review box and tile color/look for status and position clarity.** Box outlines
+      (`colorFor`, detections.js) currently pack four states into color alone — green/
+      yellow/red confidence bands, grey "not yet recognized", dark red "no text found",
+      and (new, step 8 of `refactor-plan.md`) "failed — try again" reads as the same grey
+      as never-tried. Tile progress overlay (`drawTileOverlay()`, ocr.js) is a single fixed
+      cyan, dashed-vs-solid for pending-vs-done. With many boxes/tiles on screen at once,
+      worth a deliberate pass over the whole palette — and general legibility of position
+      (overlapping outlines, label placement) — rather than colors and states having
+      accreted one at a time as features landed. Not yet designed in detail.
 
 **Benchmarks**
 Raw data behind the design above, kept for reference. All measured on this dev
