@@ -350,34 +350,57 @@ both suites, and is reviewed before the next. Only step 9 is detailed — the ex
       until `interaction.js` is extracted (they consolidate then, into `state` or an
       interaction-scoped object).
 
-## Step 10 — establish the render/flush seam  (sketch)
+## Step 10 — establish the render/flush seam
 
-- [ ] **Change.** Gather the flush functions an extracted module must call back into —
-      `redraw`, `redrawCanvas`, `renderResultsList`, `updateButtons`, `updateMeta`,
-      `setStatusMessage` — into one passable unit, so a module takes `(state, render)` rather
-      than closing over six free functions. Whether this is a standalone step or folds into
-      step 11's diff depends on how large step 11 looks once step 9 lands; on its own it is
-      near-churn until a module boundary actually crosses it.
+- [x] **Resolved: folded into step 11, not done standalone** — as the sketch anticipated. An
+      extracted module needs only the flush functions it actually calls back into, passed as
+      named params of the factory (`redraw`, `redrawCanvas`, `updateButtons`, `setStatusMessage`,
+      plus `computeOverlapWarnings`). Routing `ocr.js`'s own internal `redraw()` calls through a
+      shared `render` object would have been pure churn, since those calls never cross a module
+      boundary. So the "seam" is just the named callbacks in the factory's parameter object — no
+      separate pass, no `render` bundle, no `updateMeta`/`renderResultsList` in the set (the
+      worker never calls those directly; `redraw()` reaches `renderResultsList` for it).
 
-## Step 11 — extract `scan.js`  (sketch)
+## Step 11 — extract `scan.js`
 
-- [ ] **Change.** Move the scan queue and worker (currently `recognizeTile`, `tileBoxesFor`,
-      `enqueueTile`, `marginFor`, `recognizePendingBoxes`, `ensureWorkerRunning`, plus the Run
-      OCR / Cancel wiring) into `scan.js`, taking `state` + the render seam as arguments. This
-      is the largest single cohesive block and the hardest consumer of shared state (it
-      reassigns `detections`, `nextId`, `selectedId`, the whole scan set), so proving the
-      `state`+callbacks pattern here de-risks the gentler extractions after. If callbacks turn
-      out not to suffice — an ordering problem the current synchronous `redraw()` calls hide —
-      this is where the pub/sub question reopens, with a concrete case rather than
-      speculatively.
+- [x] **Change.** The scan queue and worker moved to `scan.js` (300 lines) as a
+      `createScan({ state, config, redraw, redrawCanvas, updateButtons, setStatusMessage,
+      computeOverlapWarnings })` factory returning the three entry points `ocr.js` wires to the
+      Run OCR / Cancel / Recognize buttons — `runFullScan`, `cancelScan`, `recognizePendingBoxes`.
+      The queue, per-tile worker (`ensureWorkerRunning`), and tiling helpers (`recognizeTile`,
+      `tileBoxesFor`, `enqueueTile`, `marginFor`) stay private to the closure. Because step 9 had
+      already turned every shared read into a `state.` access, the code moved verbatim — only
+      re-indented into the closure, no identifier rewritten: config names resolve through the
+      destructured `config`, render names through the params, `state` through its param, and
+      `tileGrid`/`boundsOf` through `scan.js`'s own imports. `ocr.js` is down to 1029 lines (from
+      1273) and holds no scan/queue/tiling logic; the dependency is one-directional (`ocr.js` →
+      `scan.js` → `tiling.js`/`geometry.js`, no cycle). The config constants and the button
+      elements stay in `ocr.js` as bootstrap/wiring.
+- [x] **Verify.** `node --check` clean on both files; `npm test` 85/85; `npm run test:browser`
+      32/32 — the tiling spec drives `runFullScan`/`recognizePendingBoxes` end to end, and
+      `scan-lifecycle` drives cancel, the carry-over teardown, and the 503 retry, so the moved
+      worker is exercised on every branch that matters. `createScan` runs at module init but only
+      captures the hoisted render functions; they are invoked later on interaction, so defining
+      `renderResultsList`/`setStatusMessage` further down the file poses no temporal-dead-zone
+      hazard.
+- [x] **Consider.** Plain dependency-injected callbacks sufficed — the pub/sub question raised in
+      the approach note stays closed. The synchronous `redraw()`/`updateButtons()` calls the
+      worker makes reassign shared `state` and repaint immediately, with no ordering a direct call
+      hides, so nothing here argues for an event bus. `computeOverlapWarnings` is passed in rather
+      than moved: it is a detection-op still shared with `updateButtons`/`renderResultsList` in
+      `ocr.js`, and belongs with the detection operations if those are later grouped, not with the
+      scan worker.
 
 ## Step 12+ — the remaining split  (sketch)
 
 - [ ] `results-list.js` (`renderResultsList`, `zoomToBox`, the thumbnail cache), then
       `canvas-view.js` (the view transform and every `draw*` / `redrawCanvas`), then
-      `interaction.js` (the pointer/keyboard handlers and their private transients). Order and
-      boundaries firm up once step 11 shows how cleanly the `state` + render seam holds. `ocr.js`
-      ends as the wiring that constructs `state`, imports the modules, and binds them to the DOM.
+      `interaction.js` (the pointer/keyboard handlers and their private transients). The
+      `state` + injected-callbacks seam held cleanly through step 11, so these follow the same
+      `create*({ state, … })` factory shape. Likely ordering: `canvas-view.js` first (the render
+      core the others depend on — `redrawCanvas` and the `draw*` helpers), then `results-list.js`
+      and `interaction.js`, which both call into it. `ocr.js` ends as the wiring that constructs
+      `state`, imports the modules, and binds them to the DOM.
 
 ## Related backlog
 
