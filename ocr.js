@@ -100,43 +100,54 @@ const TILE_OVERLAP_FRAC = 0.15;
 // 1200px = 736 * 1.63) or a single-tile region gets 413-rejected.
 const TILE_SINGLE_CELL_FACTOR = 1.4;
 
-let img = null; // loaded HTMLImageElement, full source resolution
-let fileName = ""; // original filename of the loaded image, shown in the info line
-let rotation = 0; // 0 | 90 | 180 | 270, clockwise
-let full = null; // offscreen canvas: full-res image at current rotation
-let view = { scale: 1, x: 0, y: 0 };
-let minScale = 1;
+// Mutable state shared across the whole tool, gathered into one object held by
+// reference so an extracted module (see refactor-plan.md, "The full ocr.js
+// restructure") can reassign a field and have this module observe it -- which
+// an exported `let` binding cannot do, module live bindings being import-side
+// read-only. Interaction-transient state stays in the bare `let`s below: only
+// the pointer handlers touch it, so it needs no cross-module sharing yet.
+const state = {
+  img: null,           // loaded HTMLImageElement, full source resolution
+  fileName: "",        // original filename of the loaded image, shown in the info line
+  rotation: 0,         // 0 | 90 | 180 | 270, clockwise
+  full: null,          // offscreen canvas: full-res image at current rotation
+  view: { scale: 1, x: 0, y: 0 },
+  minScale: 1,
 
-let detections = []; // [{ id, box: [[x,y]x4] in source coords, text, score }]
-let nextId = 1;
+  detections: [],      // [{ id, box: [[x,y]x4] in source coords, text, score }]
+  nextId: 1,
 
-// A whole-photo "Run OCR" and a drawn box are both just regions; each is
-// reduced at enqueue time to tile-sized crops in full-image coordinates,
-// drained by one worker (see ensureWorkerRunning() below).
-// [{ box: [x0,y0,x1,y1], kind: "auto" | "manual", placeholderId? }]
-let scanQueue = [];
-// placeholderId -> { placeholder, remaining, found: [], gotUpscaleBoost }.
-// A manual region may span several tiles; its placeholder is spliced out
-// only once every tile it produced has reported back.
-let pendingPlaceholders = new Map();
-// [{ box: [x0,y0,x1,y1], done }] in source coords, one entry per queued/
-// in-flight/completed tile for the whole current drain -- empty when idle.
-let tileOverlay = [];
-// Non-null while the queue worker is draining -- both the "scan running"
-// flag and the means to cancel it (cancelScanBtn, clearSession(),
-// clearDetections(), and loading a new photo all call .abort()). Rotation is
-// disabled while it's set, since rotate() doesn't remap tileOverlay.
-let scanAbortController = null;
-// One-shot: tells ensureWorkerRunning()'s finally to skip its completion
-// message. Set by clearDetections(), which keeps `img` set and so isn't
-// caught by the worker's own `if (img)` guard.
-let suppressScanSummary = false;
-// Last message passed to setStatusMessage(), or null when idle (bare meta
-// line only). updateMeta() re-renders it, so a pan/zoom/rotate refresh
-// doesn't wipe a message that's still active.
-let lastStatusMessage = null;
-let selectedId = null;
-let draftBox = null; // { x0, y0, x1, y1 } in source coords, while drawing a new box
+  // A whole-photo "Run OCR" and a drawn box are both just regions; each is
+  // reduced at enqueue time to tile-sized crops in full-image coordinates,
+  // drained by one worker (see ensureWorkerRunning()).
+  // [{ box: [x0,y0,x1,y1], kind: "auto" | "manual", placeholderId? }]
+  scanQueue: [],
+  // placeholderId -> { placeholder, remaining, found: [], gotUpscaleBoost }.
+  // A manual region may span several tiles; its placeholder is spliced out
+  // only once every tile it produced has reported back.
+  pendingPlaceholders: new Map(),
+  // [{ box: [x0,y0,x1,y1], done }] in source coords, one entry per queued/
+  // in-flight/completed tile for the whole current drain -- empty when idle.
+  tileOverlay: [],
+  // Non-null while the queue worker is draining -- both the "scan running"
+  // flag and the means to cancel it (cancelScanBtn, clearSession(),
+  // clearDetections(), and loading a new photo all call .abort()). Rotation is
+  // disabled while it's set, since rotate() doesn't remap tileOverlay.
+  scanAbortController: null,
+  // One-shot: tells ensureWorkerRunning()'s finally to skip its completion
+  // message. Set by clearDetections(), which keeps `img` set and so isn't
+  // caught by the worker's own `if (img)` guard.
+  suppressScanSummary: false,
+  // Last message passed to setStatusMessage(), or null when idle (bare meta
+  // line only). updateMeta() re-renders it, so a pan/zoom/rotate refresh
+  // doesn't wipe a message that's still active.
+  lastStatusMessage: null,
+
+  selectedId: null,
+  draftBox: null,      // { x0, y0, x1, y1 } in source coords, while drawing a new box
+  hoverDeleteId: null, // id of the box whose delete-X is currently shown
+  hoverBoxId: null,    // id of the box the cursor is currently over (declutter: reveals full label)
+};
 
 let dragging = null; // null | "pan" | "draw" | "select-candidate" | "move" | "resize"
 let panStart = null; // { px, py, vx, vy }
@@ -145,33 +156,31 @@ let pointerDownDisplayPos = null;
 let editStartBounds = null; // { minX, minY, maxX, maxY }, source coords, at drag start
 let editStartSource = null; // pointer's source-space position at drag start (for "move")
 let resizeHandleIndex = null; // which corner (see cornersOf), for "resize"
-let hoverDeleteId = null; // id of the box whose delete-X is currently shown
-let hoverBoxId = null; // id of the box the cursor is currently over (declutter: reveals full label)
 
 async function clearSession() {
-  if (!img && detections.length === 0) return;
+  if (!state.img && state.detections.length === 0) return;
   if (!confirm("Clear the loaded photo and all boxes?")) return;
 
   // Stop any in-flight scan against the session being wiped.
-  if (scanAbortController) scanAbortController.abort();
+  if (state.scanAbortController) state.scanAbortController.abort();
 
-  img = null;
-  fileName = "";
-  full = null;
-  rotation = 0;
-  view = { scale: 1, x: 0, y: 0 };
-  minScale = 1;
-  detections = [];
-  nextId = 1;
-  selectedId = null;
-  draftBox = null;
-  hoverDeleteId = null;
-  hoverBoxId = null;
+  state.img = null;
+  state.fileName = "";
+  state.full = null;
+  state.rotation = 0;
+  state.view = { scale: 1, x: 0, y: 0 };
+  state.minScale = 1;
+  state.detections = [];
+  state.nextId = 1;
+  state.selectedId = null;
+  state.draftBox = null;
+  state.hoverDeleteId = null;
+  state.hoverBoxId = null;
   clearThumbnailCache();
 
   fileInput.value = "";
   ctx.clearRect(0, 0, display.width, display.height);
-  lastStatusMessage = null; // don't let a stale message survive the clear
+  state.lastStatusMessage = null; // don't let a stale message survive the clear
   updateMeta();
   updateButtons();
   renderResultsList();
@@ -183,25 +192,25 @@ clearBtn.addEventListener("click", clearSession);
 // Narrower than clearSession(): drops every box (drawn, pending, or
 // recognized) but keeps the loaded photo.
 function clearDetections() {
-  if (detections.length === 0) return;
+  if (state.detections.length === 0) return;
   if (!confirm("Clear all boxes? The loaded photo is kept.")) return;
 
   // Stop any in-flight scan against the box list being wiped. `img` stays
   // set here, so suppressScanSummary is what keeps the worker from posting a
   // completion summary over the now-empty list.
-  if (scanAbortController) {
-    suppressScanSummary = true;
-    scanAbortController.abort();
+  if (state.scanAbortController) {
+    state.suppressScanSummary = true;
+    state.scanAbortController.abort();
   }
 
-  detections = [];
-  nextId = 1;
-  selectedId = null;
-  draftBox = null;
-  hoverDeleteId = null;
-  hoverBoxId = null;
+  state.detections = [];
+  state.nextId = 1;
+  state.selectedId = null;
+  state.draftBox = null;
+  state.hoverDeleteId = null;
+  state.hoverBoxId = null;
   clearThumbnailCache();
-  lastStatusMessage = null; // don't let a stale message survive the clear
+  state.lastStatusMessage = null; // don't let a stale message survive the clear
 
   updateMeta(); // re-renders the (now blank) status line
   updateButtons();
@@ -226,25 +235,25 @@ function rotatedCanvas(image, rotationDeg) {
 // canvas's). toSource()/toDisplay() (geometry.js) read view.offsetX/offsetY,
 // so this must be recomputed any time view.scale changes.
 function updateViewOffsets() {
-  const renderedW = full.width * view.scale;
-  const renderedH = full.height * view.scale;
-  view.offsetX = renderedW <= display.width ? (display.width - renderedW) / 2 : 0;
-  view.offsetY = renderedH <= display.height ? (display.height - renderedH) / 2 : 0;
+  const renderedW = state.full.width * state.view.scale;
+  const renderedH = state.full.height * state.view.scale;
+  state.view.offsetX = renderedW <= display.width ? (display.width - renderedW) / 2 : 0;
+  state.view.offsetY = renderedH <= display.height ? (display.height - renderedH) / 2 : 0;
 }
 
 function resetView({ preserveDetections = false } = {}) {
-  full = rotatedCanvas(img, rotation);
+  state.full = rotatedCanvas(state.img, state.rotation);
   display.width = Math.min(MAX_VIEWPORT_W, window.innerWidth - 48);
   display.height = Math.min(MAX_VIEWPORT_H, Math.round(window.innerHeight * 0.6));
-  minScale = Math.min(1, display.width / full.width, display.height / full.height);
-  view = { scale: minScale, x: 0, y: 0 };
+  state.minScale = Math.min(1, display.width / state.full.width, display.height / state.full.height);
+  state.view = { scale: state.minScale, x: 0, y: 0 };
   updateViewOffsets();
   if (!preserveDetections) {
-    detections = [];
-    selectedId = null;
+    state.detections = [];
+    state.selectedId = null;
   }
-  draftBox = null;
-  hoverDeleteId = null;
+  state.draftBox = null;
+  state.hoverDeleteId = null;
   updateMeta();
   redraw();
 }
@@ -252,9 +261,9 @@ function resetView({ preserveDetections = false } = {}) {
 // Info-line text: filename (if known), resolution, rotation, zoom. Shared by
 // updateMeta() and setStatusMessage(), which prepends it to a message.
 function metaLine() {
-  if (!full) return "";
-  const name = fileName ? `${fileName} · ` : "";
-  return `${name}${full.width}×${full.height}px · rotation ${rotation}° · zoom ${Math.round(view.scale * 100)}%`;
+  if (!state.full) return "";
+  const name = state.fileName ? `${state.fileName} · ` : "";
+  return `${name}${state.full.width}×${state.full.height}px · rotation ${state.rotation}° · zoom ${Math.round(state.view.scale * 100)}%`;
 }
 
 // Refreshes the meta portion of the status line, called on every
@@ -262,28 +271,28 @@ function metaLine() {
 // active, so the refresh doesn't overwrite it; falls back to the bare meta
 // line when idle.
 function updateMeta() {
-  if (lastStatusMessage != null) {
-    setStatusMessage(lastStatusMessage);
+  if (state.lastStatusMessage != null) {
+    setStatusMessage(state.lastStatusMessage);
   } else {
     statusEl.textContent = metaLine();
   }
 }
 
 function clampView() {
-  const visW = display.width / view.scale;
-  const visH = display.height / view.scale;
-  view.x = Math.min(Math.max(view.x, 0), Math.max(0, full.width - visW));
-  view.y = Math.min(Math.max(view.y, 0), Math.max(0, full.height - visH));
+  const visW = display.width / state.view.scale;
+  const visH = display.height / state.view.scale;
+  state.view.x = Math.min(Math.max(state.view.x, 0), Math.max(0, state.full.width - visW));
+  state.view.y = Math.min(Math.max(state.view.y, 0), Math.max(0, state.full.height - visH));
 }
 
 function zoomTo(newScale, anchorDisplayPt) {
-  newScale = Math.min(MAX_SCALE, Math.max(minScale, newScale));
-  if (newScale === view.scale) return;
-  const anchorSource = toSource(anchorDisplayPt, view);
-  view.scale = newScale;
+  newScale = Math.min(MAX_SCALE, Math.max(state.minScale, newScale));
+  if (newScale === state.view.scale) return;
+  const anchorSource = toSource(anchorDisplayPt, state.view);
+  state.view.scale = newScale;
   updateViewOffsets(); // offsets depend on scale — recompute before inverting below
-  view.x = anchorSource.x - (anchorDisplayPt.x - view.offsetX) / view.scale;
-  view.y = anchorSource.y - (anchorDisplayPt.y - view.offsetY) / view.scale;
+  state.view.x = anchorSource.x - (anchorDisplayPt.x - state.view.offsetX) / state.view.scale;
+  state.view.y = anchorSource.y - (anchorDisplayPt.y - state.view.offsetY) / state.view.scale;
   clampView();
   updateMeta();
   redrawCanvas(); // view-only: no list content changed, nothing to persist
@@ -292,7 +301,7 @@ function zoomTo(newScale, anchorDisplayPt) {
 function strokeBoxPath(box) {
   ctx.beginPath();
   box.forEach((pt, i) => {
-    const d = toDisplay({ x: pt[0], y: pt[1] }, view);
+    const d = toDisplay({ x: pt[0], y: pt[1] }, state.view);
     if (i === 0) ctx.moveTo(d.x, d.y);
     else ctx.lineTo(d.x, d.y);
   });
@@ -317,8 +326,8 @@ function drawLabelText(text, color, topLeft) {
 // hovered or selected box; the results list always shows everything.
 function drawDetection(detection, index) {
   const color = colorFor(detection);
-  const isSelected = detection.id === selectedId;
-  const isHovered = detection.id === hoverBoxId;
+  const isSelected = detection.id === state.selectedId;
+  const isHovered = detection.id === state.hoverBoxId;
   const isPending = detection.score == null;
   const showFullLabel = isSelected || isHovered;
 
@@ -329,7 +338,7 @@ function drawDetection(detection, index) {
   ctx.stroke();
   ctx.setLineDash([]);
 
-  const topLeft = toDisplay({ x: detection.box[0][0], y: detection.box[0][1] }, view);
+  const topLeft = toDisplay({ x: detection.box[0][0], y: detection.box[0][1] }, state.view);
   if (showFullLabel) {
     drawLabelText(canvasLabelFor(detection), isSelected ? "#3498db" : color, topLeft);
   } else {
@@ -341,20 +350,20 @@ function drawDetection(detection, index) {
 // tracks pan/zoom — clear of the corners, which are resize handles.
 function deleteHotspotDisplayPos(detection) {
   const b = boundsOf(detection.box);
-  const topCenter = toDisplay({ x: (b.minX + b.maxX) / 2, y: b.minY }, view);
+  const topCenter = toDisplay({ x: (b.minX + b.maxX) / 2, y: b.minY }, state.view);
   return { x: topCenter.x, y: topCenter.y - 14 };
 }
 
 // A box's delete-X shows when it's hovered near or selected.
 function visibleDeleteHotspotIds() {
   const ids = new Set();
-  if (selectedId != null) ids.add(selectedId);
-  if (hoverDeleteId != null) ids.add(hoverDeleteId);
+  if (state.selectedId != null) ids.add(state.selectedId);
+  if (state.hoverDeleteId != null) ids.add(state.hoverDeleteId);
   return ids;
 }
 
 function selectedDetection() {
-  return selectedId == null ? null : detections.find((d) => d.id === selectedId);
+  return state.selectedId == null ? null : state.detections.find((d) => d.id === state.selectedId);
 }
 
 function drawResizeHandles() {
@@ -362,7 +371,7 @@ function drawResizeHandles() {
   if (!detection) return;
   const bounds = boundsOf(detection.box);
   for (const corner of cornersOf(bounds)) {
-    const p = toDisplay(corner, view);
+    const p = toDisplay(corner, state.view);
     ctx.fillStyle = "#fff";
     ctx.strokeStyle = "#3498db";
     ctx.lineWidth = 1.5;
@@ -388,7 +397,7 @@ function applyEditedBox(detection, newBox) {
 
 function drawDeleteHotspot() {
   for (const id of visibleDeleteHotspotIds()) {
-    const detection = detections.find((d) => d.id === id);
+    const detection = state.detections.find((d) => d.id === id);
     if (!detection) continue;
     const pos = deleteHotspotDisplayPos(detection);
 
@@ -413,9 +422,9 @@ function drawDeleteHotspot() {
 // while a tile is queued/in-flight, solid once its result is back. A plain
 // outline, so it reads differently from the detection boxes drawn over it.
 function drawTileOverlay() {
-  for (const t of tileOverlay) {
-    const p0 = toDisplay({ x: t.box[0], y: t.box[1] }, view);
-    const p1 = toDisplay({ x: t.box[2], y: t.box[3] }, view);
+  for (const t of state.tileOverlay) {
+    const p0 = toDisplay({ x: t.box[0], y: t.box[1] }, state.view);
+    const p1 = toDisplay({ x: t.box[2], y: t.box[3] }, state.view);
     ctx.setLineDash(t.done ? [] : [5, 4]);
     ctx.lineWidth = 1.5;
     ctx.strokeStyle = "rgba(0, 188, 212, 0.85)";
@@ -427,21 +436,21 @@ function drawTileOverlay() {
 // Canvas-only repaint. Hover updates use this rather than redraw(), which
 // would rebuild the list DOM under the cursor and misfire its hover events.
 function redrawCanvas() {
-  if (!full) return;
+  if (!state.full) return;
   ctx.clearRect(0, 0, display.width, display.height);
   // Clip the sampled source rect to the image's bounds; the destination rect
   // is drawn at view.offsetX/offsetY, centering the image in the leftover
   // space on whichever axis it doesn't fill.
-  const visW = Math.min(full.width, display.width / view.scale);
-  const visH = Math.min(full.height, display.height / view.scale);
-  ctx.drawImage(full, view.x, view.y, visW, visH, view.offsetX, view.offsetY, visW * view.scale, visH * view.scale);
+  const visW = Math.min(state.full.width, display.width / state.view.scale);
+  const visH = Math.min(state.full.height, display.height / state.view.scale);
+  ctx.drawImage(state.full, state.view.x, state.view.y, visW, visH, state.view.offsetX, state.view.offsetY, visW * state.view.scale, visH * state.view.scale);
 
-  if (tileOverlay.length > 0) drawTileOverlay();
-  detections.forEach((d, i) => drawDetection(d, i));
+  if (state.tileOverlay.length > 0) drawTileOverlay();
+  state.detections.forEach((d, i) => drawDetection(d, i));
 
-  if (draftBox) {
-    const p0 = toDisplay({ x: draftBox.x0, y: draftBox.y0 }, view);
-    const p1 = toDisplay({ x: draftBox.x1, y: draftBox.y1 }, view);
+  if (state.draftBox) {
+    const p0 = toDisplay({ x: state.draftBox.x0, y: state.draftBox.y0 }, state.view);
+    const p1 = toDisplay({ x: state.draftBox.x1, y: state.draftBox.y1 }, state.view);
     ctx.setLineDash([6, 4]);
     ctx.lineWidth = 2;
     ctx.strokeStyle = "#3498db";
@@ -456,7 +465,7 @@ function redrawCanvas() {
 function redraw() {
   redrawCanvas();
   renderResultsList();
-  persistState({ rotation, detections });
+  persistState({ rotation: state.rotation, detections: state.detections });
 }
 
 // Detections whose bounding rects intersect — likely duplicate reads of the
@@ -464,14 +473,14 @@ function redraw() {
 // display numbers (1-based), for the list warning.
 function computeOverlapWarnings() {
   const warnings = new Map();
-  for (let i = 0; i < detections.length; i++) {
-    const boundsI = boundsOf(detections[i].box);
-    for (let j = i + 1; j < detections.length; j++) {
-      if (overlapArea(boundsI, boundsOf(detections[j].box)) <= 0) continue;
-      if (!warnings.has(detections[i].id)) warnings.set(detections[i].id, []);
-      if (!warnings.has(detections[j].id)) warnings.set(detections[j].id, []);
-      warnings.get(detections[i].id).push(j + 1);
-      warnings.get(detections[j].id).push(i + 1);
+  for (let i = 0; i < state.detections.length; i++) {
+    const boundsI = boundsOf(state.detections[i].box);
+    for (let j = i + 1; j < state.detections.length; j++) {
+      if (overlapArea(boundsI, boundsOf(state.detections[j].box)) <= 0) continue;
+      if (!warnings.has(state.detections[i].id)) warnings.set(state.detections[i].id, []);
+      if (!warnings.has(state.detections[j].id)) warnings.set(state.detections[j].id, []);
+      warnings.get(state.detections[i].id).push(j + 1);
+      warnings.get(state.detections[j].id).push(i + 1);
     }
   }
   return warnings;
@@ -481,16 +490,16 @@ function computeOverlapWarnings() {
 // clear any selection/hover state that would otherwise dangle on a removed id.
 function removeDetections(idsToRemove) {
   if (idsToRemove.size === 0) return 0;
-  detections = detections.filter((d) => !idsToRemove.has(d.id));
-  if (selectedId != null && idsToRemove.has(selectedId)) selectedId = null;
-  if (hoverDeleteId != null && idsToRemove.has(hoverDeleteId)) hoverDeleteId = null;
-  if (hoverBoxId != null && idsToRemove.has(hoverBoxId)) hoverBoxId = null;
+  state.detections = state.detections.filter((d) => !idsToRemove.has(d.id));
+  if (state.selectedId != null && idsToRemove.has(state.selectedId)) state.selectedId = null;
+  if (state.hoverDeleteId != null && idsToRemove.has(state.hoverDeleteId)) state.hoverDeleteId = null;
+  if (state.hoverBoxId != null && idsToRemove.has(state.hoverBoxId)) state.hoverBoxId = null;
   return idsToRemove.size;
 }
 
 function pruneOverlapping() {
-  const keptIds = new Set(selectNonOverlapping(detections).map((d) => d.id));
-  const removedIds = new Set(detections.filter((d) => !keptIds.has(d.id)).map((d) => d.id));
+  const keptIds = new Set(selectNonOverlapping(state.detections).map((d) => d.id));
+  const removedIds = new Set(state.detections.filter((d) => !keptIds.has(d.id)).map((d) => d.id));
   return removeDetections(removedIds);
 }
 
@@ -498,26 +507,26 @@ function pruneOverlapping() {
 // Never-tried boxes (gray dashed) are left alone.
 function pruneEmpty() {
   const emptyIds = new Set(
-    detections.filter((d) => d.score == null && d.attempted).map((d) => d.id),
+    state.detections.filter((d) => d.score == null && d.attempted).map((d) => d.id),
   );
   return removeDetections(emptyIds);
 }
 
 function updateButtons() {
-  const hasImage = !!img;
-  for (const b of [rotateLeftBtn, rotateRightBtn]) b.disabled = !hasImage || !!scanAbortController;
+  const hasImage = !!state.img;
+  for (const b of [rotateLeftBtn, rotateRightBtn]) b.disabled = !hasImage || !!state.scanAbortController;
   // Both scan buttons just push onto scanQueue and (re)start the worker (see
   // ensureWorkerRunning()), so clicking either mid-scan adds to the same
   // queue rather than being blocked.
   runOcrBtn.disabled = !hasImage;
-  cancelScanBtn.disabled = !scanAbortController;
-  deleteBtn.disabled = selectedId == null;
-  recognizePendingBtn.disabled = !detections.some((d) => d.score == null && !d.attempted);
+  cancelScanBtn.disabled = !state.scanAbortController;
+  deleteBtn.disabled = state.selectedId == null;
+  recognizePendingBtn.disabled = !state.detections.some((d) => d.score == null && !d.attempted);
   pruneOverlappingBtn.disabled = computeOverlapWarnings().size === 0;
-  pruneEmptyBtn.disabled = !detections.some((d) => d.score == null && d.attempted);
-  goToGuideBtn.disabled = !detections.some((d) => d.score != null);
-  clearBtn.disabled = !hasImage && detections.length === 0;
-  clearBoxesBtn.disabled = detections.length === 0;
+  pruneEmptyBtn.disabled = !state.detections.some((d) => d.score == null && d.attempted);
+  goToGuideBtn.disabled = !state.detections.some((d) => d.score != null);
+  clearBtn.disabled = !hasImage && state.detections.length === 0;
+  clearBoxesBtn.disabled = state.detections.length === 0;
 }
 
 // The canvas's rendered CSS size can differ from its internal pixel buffer
@@ -533,21 +542,21 @@ function pointerDisplayPos(e) {
 function tryDeleteAtClick(p) {
   const ids = [...visibleDeleteHotspotIds()];
   if (ids.length === 0) return false;
-  const hotspots = ids.map((id) => deleteHotspotDisplayPos(detections.find((d) => d.id === id)));
+  const hotspots = ids.map((id) => deleteHotspotDisplayPos(state.detections.find((d) => d.id === id)));
   const idx = nearestWithinRadius(p, hotspots, DELETE_HOVER_RADIUS);
   if (idx < 0) return false;
 
   const hitId = ids[idx];
-  detections = detections.filter((d) => d.id !== hitId);
-  if (selectedId === hitId) selectedId = null;
-  if (hoverDeleteId === hitId) hoverDeleteId = null;
+  state.detections = state.detections.filter((d) => d.id !== hitId);
+  if (state.selectedId === hitId) state.selectedId = null;
+  if (state.hoverDeleteId === hitId) state.hoverDeleteId = null;
   updateButtons();
   redraw();
   return true;
 }
 
 display.addEventListener("pointerdown", (e) => {
-  if (!img) return;
+  if (!state.img) return;
   const p = pointerDisplayPos(e);
   if (tryDeleteAtClick(p)) return; // clicking a delete-X always wins
 
@@ -556,17 +565,17 @@ display.addEventListener("pointerdown", (e) => {
 
   if (e.ctrlKey && e.button === 0) {
     dragging = "pan";
-    panStart = { px: p.x, py: p.y, vx: view.x, vy: view.y };
+    panStart = { px: p.x, py: p.y, vx: state.view.x, vy: state.view.y };
     return;
   }
 
-  const sp = toSource(p, view);
+  const sp = toSource(p, state.view);
 
-  if (selectedId != null) {
+  if (state.selectedId != null) {
     const current = selectedDetection();
     if (current) {
       const bounds = boundsOf(current.box);
-      const handlePositions = cornersOf(bounds).map((c) => toDisplay(c, view));
+      const handlePositions = cornersOf(bounds).map((c) => toDisplay(c, state.view));
       const handleIdx = nearestWithinRadius(p, handlePositions, RESIZE_HANDLE_HIT_RADIUS);
       if (handleIdx >= 0) {
         dragging = "resize";
@@ -583,33 +592,33 @@ display.addEventListener("pointerdown", (e) => {
     }
   }
 
-  const hitIndex = hitTestBoxes(sp, detections);
+  const hitIndex = hitTestBoxes(sp, state.detections);
   if (hitIndex >= 0) {
     dragging = "select-candidate";
-    selectCandidateId = detections[hitIndex].id;
+    selectCandidateId = state.detections[hitIndex].id;
   } else {
     dragging = "draw";
-    draftBox = { x0: sp.x, y0: sp.y, x1: sp.x, y1: sp.y };
+    state.draftBox = { x0: sp.x, y0: sp.y, x1: sp.x, y1: sp.y };
   }
 });
 
 function updateHoverDelete(p) {
-  const hotspots = detections.map(deleteHotspotDisplayPos);
+  const hotspots = state.detections.map(deleteHotspotDisplayPos);
   const idx = nearestWithinRadius(p, hotspots, DELETE_HOVER_RADIUS);
-  const newHoverId = idx >= 0 ? detections[idx].id : null;
-  if (newHoverId !== hoverDeleteId) {
-    hoverDeleteId = newHoverId;
+  const newHoverId = idx >= 0 ? state.detections[idx].id : null;
+  if (newHoverId !== state.hoverDeleteId) {
+    state.hoverDeleteId = newHoverId;
     return true;
   }
   return false;
 }
 
 function updateHoverBox(p) {
-  const sp = toSource(p, view);
-  const idx = hitTestBoxes(sp, detections);
-  const newHoverId = idx >= 0 ? detections[idx].id : null;
-  if (newHoverId !== hoverBoxId) {
-    hoverBoxId = newHoverId;
+  const sp = toSource(p, state.view);
+  const idx = hitTestBoxes(sp, state.detections);
+  const newHoverId = idx >= 0 ? state.detections[idx].id : null;
+  if (newHoverId !== state.hoverBoxId) {
+    state.hoverBoxId = newHoverId;
     return true;
   }
   return false;
@@ -626,18 +635,18 @@ display.addEventListener("pointermove", (e) => {
   }
 
   if (dragging === "pan") {
-    view.x = panStart.vx - (p.x - panStart.px) / view.scale;
-    view.y = panStart.vy - (p.y - panStart.py) / view.scale;
+    state.view.x = panStart.vx - (p.x - panStart.px) / state.view.scale;
+    state.view.y = panStart.vy - (p.y - panStart.py) / state.view.scale;
     clampView();
     updateMeta();
     redrawCanvas(); // view-only: no list content changed, nothing to persist
   } else if (dragging === "draw") {
-    const sp = toSource(p, view);
-    draftBox.x1 = sp.x;
-    draftBox.y1 = sp.y;
+    const sp = toSource(p, state.view);
+    state.draftBox.x1 = sp.x;
+    state.draftBox.y1 = sp.y;
     redrawCanvas();
   } else if (dragging === "move") {
-    const sp = toSource(p, view);
+    const sp = toSource(p, state.view);
     const dx = sp.x - editStartSource.x;
     const dy = sp.y - editStartSource.y;
     const b = editStartBounds;
@@ -646,7 +655,7 @@ display.addEventListener("pointermove", (e) => {
     });
     redrawCanvas();
   } else if (dragging === "resize") {
-    const sp = toSource(p, view);
+    const sp = toSource(p, state.view);
     const bounds = resizedBounds(resizeHandleIndex, sp, editStartBounds);
     selectedDetection().box = normalizedRectBox(bounds);
     redrawCanvas();
@@ -662,27 +671,27 @@ display.addEventListener("pointerup", (e) => {
 
   if (dragging === "draw") {
     if (moved >= CLICK_THRESHOLD_PX) {
-      detections.push({
-        id: nextId++,
-        box: normalizedRectBox(draftBox),
+      state.detections.push({
+        id: state.nextId++,
+        box: normalizedRectBox(state.draftBox),
         text: null,
         score: null,
         source: "manual",
       });
-      selectedId = detections[detections.length - 1].id;
+      state.selectedId = state.detections[state.detections.length - 1].id;
     } else {
-      selectedId = null; // click on empty canvas: deselect
+      state.selectedId = null; // click on empty canvas: deselect
     }
-    draftBox = null;
+    state.draftBox = null;
   } else if (dragging === "select-candidate") {
-    selectedId = selectedId === selectCandidateId ? null : selectCandidateId;
+    state.selectedId = state.selectedId === selectCandidateId ? null : selectCandidateId;
     selectCandidateId = null;
   } else if (dragging === "move" || dragging === "resize") {
     const detection = selectedDetection();
     if (moved >= CLICK_THRESHOLD_PX) {
       if (detection) applyEditedBox(detection, detection.box);
     } else if (dragging === "move") {
-      selectedId = null; // click (no real drag) on the selected box's body: deselect
+      state.selectedId = null; // click (no real drag) on the selected box's body: deselect
     }
     editStartBounds = null;
     editStartSource = null;
@@ -695,15 +704,15 @@ display.addEventListener("pointerup", (e) => {
 });
 
 display.addEventListener("pointerleave", () => {
-  if (hoverDeleteId != null || hoverBoxId != null) {
-    hoverDeleteId = null;
-    hoverBoxId = null;
+  if (state.hoverDeleteId != null || state.hoverBoxId != null) {
+    state.hoverDeleteId = null;
+    state.hoverBoxId = null;
     redrawCanvas();
   }
 });
 
 display.addEventListener("wheel", (e) => {
-  if (!img) return;
+  if (!state.img) return;
   e.preventDefault();
   const anchor = pointerDisplayPos(e);
   if (e.ctrlKey) {
@@ -711,10 +720,10 @@ display.addEventListener("wheel", (e) => {
     // trackpad's sparse early pinch events zoom less than a later fast burst.
     // Clamped so a large deltaY spike can't jump more than ~1.4x in one event.
     const factor = Math.max(0.7, Math.min(1.4, Math.exp(-e.deltaY * ZOOM_SENSITIVITY)));
-    zoomTo(view.scale * factor, anchor);
+    zoomTo(state.view.scale * factor, anchor);
   } else {
-    view.x += e.deltaX / view.scale;
-    view.y += e.deltaY / view.scale;
+    state.view.x += e.deltaX / state.view.scale;
+    state.view.y += e.deltaY / state.view.scale;
     clampView();
     updateMeta();
     redrawCanvas(); // view-only: no list content changed, nothing to persist
@@ -722,16 +731,16 @@ display.addEventListener("wheel", (e) => {
 }, { passive: false });
 
 window.addEventListener("keydown", (e) => {
-  if ((e.key === "Delete" || e.key === "Backspace") && selectedId != null) {
+  if ((e.key === "Delete" || e.key === "Backspace") && state.selectedId != null) {
     e.preventDefault();
     deleteSelected();
   }
 });
 
 function deleteSelected() {
-  if (selectedId == null) return;
-  detections = detections.filter((d) => d.id !== selectedId);
-  selectedId = null;
+  if (state.selectedId == null) return;
+  state.detections = state.detections.filter((d) => d.id !== state.selectedId);
+  state.selectedId = null;
   updateButtons();
   redraw();
 }
@@ -758,14 +767,14 @@ function rotatePoint([x, y], delta, oldW, oldH) {
 }
 
 function rotate(delta) {
-  if (!img || scanAbortController) return;
-  const oldW = full.width;
-  const oldH = full.height;
-  detections = detections.map((d) => ({
+  if (!state.img || state.scanAbortController) return;
+  const oldW = state.full.width;
+  const oldH = state.full.height;
+  state.detections = state.detections.map((d) => ({
     ...d,
     box: d.box.map((pt) => rotatePoint(pt, delta, oldW, oldH)),
   }));
-  rotation = (rotation + delta + 360) % 360;
+  state.rotation = (state.rotation + delta + 360) % 360;
   clearThumbnailCache(); // `full` is re-rendered, so every cached crop is stale
   resetView({ preserveDetections: true });
   updateButtons();
@@ -781,7 +790,7 @@ async function recognizeTile([x0, y0, x1, y1], signal) {
   const cropCanvas = document.createElement("canvas");
   cropCanvas.width = tw;
   cropCanvas.height = th;
-  cropCanvas.getContext("2d").drawImage(full, x0, y0, tw, th, 0, 0, tw, th);
+  cropCanvas.getContext("2d").drawImage(state.full, x0, y0, tw, th, 0, 0, tw, th);
   const blob = await new Promise((resolve) => cropCanvas.toBlob(resolve, "image/png"));
   // toBlob yields null if the canvas can't be encoded; posting that would send
   // an empty body and read as a tile that found nothing.
@@ -821,17 +830,17 @@ function enqueueTile(item) {
   // The queue item holds its own overlay entry, so marking a tile done is a
   // direct write rather than a search keyed on shared array identity.
   const overlay = { box: item.box, done: false };
-  scanQueue.push({
+  state.scanQueue.push({
     ...item,
     overlay,
-    enqueuedAfterAbort: scanAbortController?.signal.aborted === true,
+    enqueuedAfterAbort: state.scanAbortController?.signal.aborted === true,
   });
-  tileOverlay.push(overlay);
+  state.tileOverlay.push(overlay);
 }
 
 runOcrBtn.addEventListener("click", () => {
-  if (!full) return;
-  for (const box of tileBoxesFor(0, 0, full.width, full.height)) {
+  if (!state.full) return;
+  for (const box of tileBoxesFor(0, 0, state.full.width, state.full.height)) {
     enqueueTile({ box, kind: "auto" });
   }
   redrawCanvas();
@@ -839,7 +848,7 @@ runOcrBtn.addEventListener("click", () => {
 });
 
 cancelScanBtn.addEventListener("click", () => {
-  if (scanAbortController) scanAbortController.abort();
+  if (state.scanAbortController) state.scanAbortController.abort();
 });
 
 // Margin around the user's rough box, giving the detector room to find the
@@ -856,8 +865,8 @@ function marginFor(bounds) {
 function recognizePendingBoxes() {
   // Skips boxes already queued: one placeholder entry per box, so a second
   // click can't overwrite bookkeeping the first click's tiles still refer to.
-  const pending = detections.filter(
-    (d) => d.score == null && !d.attempted && !pendingPlaceholders.has(d.id),
+  const pending = state.detections.filter(
+    (d) => d.score == null && !d.attempted && !state.pendingPlaceholders.has(d.id),
   );
   if (pending.length === 0) return;
 
@@ -866,15 +875,15 @@ function recognizePendingBoxes() {
     const margin = marginFor(bounds);
     const x0 = Math.max(0, Math.floor(bounds.minX - margin));
     const y0 = Math.max(0, Math.floor(bounds.minY - margin));
-    const x1 = Math.min(full.width, Math.ceil(bounds.maxX + margin));
-    const y1 = Math.min(full.height, Math.ceil(bounds.maxY + margin));
+    const x1 = Math.min(state.full.width, Math.ceil(bounds.maxX + margin));
+    const y1 = Math.min(state.full.height, Math.ceil(bounds.maxY + margin));
     const w = x1 - x0;
     const h = y1 - y0;
     const gotUpscaleBoost = Math.min(w, h) < RAPIDOCR_UPSCALE_SHORT_SIDE;
 
     const boxes = tileBoxesFor(x0, y0, w, h);
     if (boxes.length === 0) continue; // degenerate (zero-area) region -- nothing to scan
-    pendingPlaceholders.set(placeholder.id, { placeholder, remaining: boxes.length, found: [], gotUpscaleBoost });
+    state.pendingPlaceholders.set(placeholder.id, { placeholder, remaining: boxes.length, found: [], gotUpscaleBoost });
     for (const box of boxes) {
       enqueueTile({ box, kind: "manual", placeholderId: placeholder.id });
     }
@@ -894,9 +903,9 @@ recognizePendingBtn.addEventListener("click", recognizePendingBoxes);
 // the manual "Prune overlapping" button, so the raw per-tile results stay
 // inspectable. The completion message points at it when there's cleanup to do.
 async function ensureWorkerRunning() {
-  if (scanAbortController) return;
-  scanAbortController = new AbortController();
-  const signal = scanAbortController.signal;
+  if (state.scanAbortController) return;
+  state.scanAbortController = new AbortController();
+  const signal = state.scanAbortController.signal;
   updateButtons();
 
   let autoFoundCount = 0;
@@ -911,10 +920,10 @@ async function ensureWorkerRunning() {
   // scanAbortController non-null would wedge every future scan, since
   // ensureWorkerRunning() early-returns whenever it's set.
   try {
-    while (scanQueue.length > 0) {
+    while (state.scanQueue.length > 0) {
       if (signal.aborted) break;
-      const item = scanQueue.shift();
-      setStatusMessage(`Scanning… ${scanQueue.length} tile(s) queued`);
+      const item = state.scanQueue.shift();
+      setStatusMessage(`Scanning… ${state.scanQueue.length} tile(s) queued`);
 
       let found;
       try {
@@ -929,7 +938,7 @@ async function ensureWorkerRunning() {
         // Tag the region so a manual completion below can tell "this tile
         // errored" apart from "this tile genuinely found nothing" -- see the
         // entry.errored check further down.
-        if (item.kind === "manual") pendingPlaceholders.get(item.placeholderId).errored = true;
+        if (item.kind === "manual") state.pendingPlaceholders.get(item.placeholderId).errored = true;
       }
       if (signal.aborted) break; // discard a result that arrived the instant abort() landed
 
@@ -937,9 +946,9 @@ async function ensureWorkerRunning() {
       redrawCanvas();
 
       if (item.kind === "auto") {
-        const newDetections = found.map((d) => ({ id: nextId++, ...d, source: "auto" }));
+        const newDetections = found.map((d) => ({ id: state.nextId++, ...d, source: "auto" }));
         autoFoundCount += newDetections.length;
-        detections = [...detections, ...newDetections];
+        state.detections = [...state.detections, ...newDetections];
         redraw();
         continue;
       }
@@ -947,11 +956,11 @@ async function ensureWorkerRunning() {
       // manual: accumulate until every tile this placeholder produced has
       // reported back, then splice its results in (or mark it "no text
       // found" if none of them found anything).
-      const entry = pendingPlaceholders.get(item.placeholderId);
+      const entry = state.pendingPlaceholders.get(item.placeholderId);
       entry.found.push(...found);
       entry.remaining--;
       if (entry.remaining > 0) continue;
-      pendingPlaceholders.delete(item.placeholderId);
+      state.pendingPlaceholders.delete(item.placeholderId);
       manualRegionCount++;
       if (!entry.gotUpscaleBoost) manualNoBoostCount++;
       if (entry.found.length === 0) {
@@ -966,11 +975,11 @@ async function ensureWorkerRunning() {
           manualEmptyCount++;
         }
       } else {
-        const newDetections = entry.found.map((d) => ({ id: nextId++, ...d, source: "manual" }));
+        const newDetections = entry.found.map((d) => ({ id: state.nextId++, ...d, source: "manual" }));
         manualFoundCount += newDetections.length;
-        const idx = detections.indexOf(entry.placeholder);
-        if (idx >= 0) detections.splice(idx, 1, ...newDetections);
-        if (selectedId != null && !detections.some((d) => d.id === selectedId)) selectedId = null;
+        const idx = state.detections.indexOf(entry.placeholder);
+        if (idx >= 0) state.detections.splice(idx, 1, ...newDetections);
+        if (state.selectedId != null && !state.detections.some((d) => d.id === state.selectedId)) state.selectedId = null;
       }
       redraw();
     }
@@ -978,35 +987,35 @@ async function ensureWorkerRunning() {
     const cancelled = signal.aborted;
     // Tiles enqueued after the abort landed belong to the next drain, so only
     // this drain's own leftovers are discarded.
-    const carried = scanQueue.filter((t) => t.enqueuedAfterAbort);
-    const leftoverCount = scanQueue.length - carried.length;
+    const carried = state.scanQueue.filter((t) => t.enqueuedAfterAbort);
+    const leftoverCount = state.scanQueue.length - carried.length;
     const carriedPlaceholderIds = new Set(
       carried.filter((t) => t.placeholderId != null).map((t) => t.placeholderId),
     );
-    scanQueue = carried.map((t) => ({ ...t, enqueuedAfterAbort: false }));
+    state.scanQueue = carried.map((t) => ({ ...t, enqueuedAfterAbort: false }));
     // Carried tiles were never drained, so their overlay entries are still
     // undone and can be reused as-is.
-    tileOverlay = carried.map((t) => t.overlay);
+    state.tileOverlay = carried.map((t) => t.overlay);
 
     // A cancelled region keeps whatever tiles came back before the cancel
     // landed, matching the auto layer's partial-keep above. A placeholder
     // whose tiles carried over is left intact for the next drain to finish,
     // rather than being resolved here and orphaning those tiles.
-    for (const [placeholderId, entry] of pendingPlaceholders) {
+    for (const [placeholderId, entry] of state.pendingPlaceholders) {
       if (carriedPlaceholderIds.has(placeholderId)) continue;
       if (entry.found.length > 0) {
-        const newDetections = entry.found.map((d) => ({ id: nextId++, ...d, source: "manual" }));
-        const idx = detections.indexOf(entry.placeholder);
-        if (idx >= 0) detections.splice(idx, 1, ...newDetections);
+        const newDetections = entry.found.map((d) => ({ id: state.nextId++, ...d, source: "manual" }));
+        const idx = state.detections.indexOf(entry.placeholder);
+        if (idx >= 0) state.detections.splice(idx, 1, ...newDetections);
       }
-      pendingPlaceholders.delete(placeholderId);
+      state.pendingPlaceholders.delete(placeholderId);
     }
-    scanAbortController = null;
+    state.scanAbortController = null;
 
     // Clear ran mid-scan (img null), or Clear boxes did (suppressScanSummary,
     // since img stays set there) -- either way, don't post a stale summary
     // over the clean state it just left behind.
-    if (img && !suppressScanSummary) {
+    if (state.img && !state.suppressScanSummary) {
       const parts = [];
       if (autoFoundCount > 0) parts.push(`found ${autoFoundCount} box(es) from the full photo`);
       if (manualRegionCount > 0) {
@@ -1027,13 +1036,13 @@ async function ensureWorkerRunning() {
       if (overlapCount > 0) parts.push(`${overlapCount} box(es) overlap — Prune overlapping to clean up`);
       setStatusMessage(parts.length > 0 ? parts.join("\n") : "Scan complete, nothing found");
     }
-    suppressScanSummary = false;
+    state.suppressScanSummary = false;
     updateButtons();
     redraw();
 
     // Work arrived while this drain was tearing down -- pick it up, rather
     // than leaving it queued with nothing running to consume it.
-    if (scanQueue.length > 0) ensureWorkerRunning();
+    if (state.scanQueue.length > 0) ensureWorkerRunning();
   }
 }
 
@@ -1066,7 +1075,7 @@ function thumbnailDataUrl(detection) {
   const c = document.createElement("canvas");
   c.width = outW;
   c.height = outH;
-  c.getContext("2d").drawImage(full, b.minX, b.minY, w, h, 0, 0, outW, outH);
+  c.getContext("2d").drawImage(state.full, b.minX, b.minY, w, h, 0, 0, outW, outH);
 
   const url = c.toDataURL("image/png");
   thumbnailCache.set(detection.id, { key, url });
@@ -1076,7 +1085,7 @@ function thumbnailDataUrl(detection) {
 // Frames the box with 3x its own width/height as margin on each side, so the
 // visible region is 7x the box's size along each axis.
 function zoomToBox(detection) {
-  if (!full) return;
+  if (!state.full) return;
   const b = boundsOf(detection.box);
   const boxW = b.maxX - b.minX;
   const boxH = b.maxY - b.minY;
@@ -1086,10 +1095,10 @@ function zoomToBox(detection) {
   const centerY = (b.minY + b.maxY) / 2;
 
   const scaleToFit = Math.min(display.width / targetW, display.height / targetH);
-  view.scale = Math.min(MAX_SCALE, Math.max(minScale, scaleToFit));
+  state.view.scale = Math.min(MAX_SCALE, Math.max(state.minScale, scaleToFit));
   updateViewOffsets(); // offsets depend on scale — recompute before using below
-  view.x = centerX - (display.width / 2 - view.offsetX) / view.scale;
-  view.y = centerY - (display.height / 2 - view.offsetY) / view.scale;
+  state.view.x = centerX - (display.width / 2 - state.view.offsetX) / state.view.scale;
+  state.view.y = centerY - (display.height / 2 - state.view.offsetY) / state.view.scale;
   clampView();
   updateMeta();
 }
@@ -1097,11 +1106,11 @@ function zoomToBox(detection) {
 function renderResultsList() {
   resultsEl.innerHTML = "";
   const overlapWarnings = computeOverlapWarnings();
-  detections.forEach((d, i) => {
+  state.detections.forEach((d, i) => {
     const li = document.createElement("li");
     li.className = "result-row";
     li.style.cursor = "pointer";
-    li.style.fontWeight = d.id === selectedId ? "bold" : "normal";
+    li.style.fontWeight = d.id === state.selectedId ? "bold" : "normal";
 
     const thumb = document.createElement("img");
     thumb.className = "result-thumb";
@@ -1136,7 +1145,7 @@ function renderResultsList() {
     findBtn.textContent = "\u{1F50D}"; // 🔍
     findBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      selectedId = d.id;
+      state.selectedId = d.id;
       zoomToBox(d);
       updateButtons();
       redraw();
@@ -1149,10 +1158,10 @@ function renderResultsList() {
     delBtn.textContent = "✕"; // ✕
     delBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      detections = detections.filter((x) => x.id !== d.id);
-      if (selectedId === d.id) selectedId = null;
-      if (hoverDeleteId === d.id) hoverDeleteId = null;
-      if (hoverBoxId === d.id) hoverBoxId = null;
+      state.detections = state.detections.filter((x) => x.id !== d.id);
+      if (state.selectedId === d.id) state.selectedId = null;
+      if (state.hoverDeleteId === d.id) state.hoverDeleteId = null;
+      if (state.hoverBoxId === d.id) state.hoverBoxId = null;
       updateButtons();
       redraw();
     });
@@ -1160,19 +1169,19 @@ function renderResultsList() {
     icons.append(findBtn, delBtn);
     li.append(thumb, info, icons);
     li.addEventListener("click", () => {
-      selectedId = selectedId === d.id ? null : d.id;
+      state.selectedId = state.selectedId === d.id ? null : d.id;
       updateButtons();
       redraw();
     });
     // Hovering a row reveals that box's full label on the image, mirroring
     // canvas hover. redrawCanvas(), not redraw(): see redrawCanvas().
     li.addEventListener("mouseenter", () => {
-      hoverBoxId = d.id;
+      state.hoverBoxId = d.id;
       redrawCanvas();
     });
     li.addEventListener("mouseleave", () => {
-      if (hoverBoxId === d.id) {
-        hoverBoxId = null;
+      if (state.hoverBoxId === d.id) {
+        state.hoverBoxId = null;
         redrawCanvas();
       }
     });
@@ -1183,7 +1192,7 @@ function renderResultsList() {
 // The meta line stays regular text; the message half is wrapped in a
 // monospace span so it reads as a distinct system message.
 function setStatusMessage(msg) {
-  lastStatusMessage = msg;
+  state.lastStatusMessage = msg;
   const meta = metaLine();
   statusEl.textContent = "";
   if (meta) statusEl.append(`${meta} — `);
@@ -1197,17 +1206,17 @@ fileInput.addEventListener("change", () => {
   const file = fileInput.files[0];
   if (!file) return;
   // Stop any in-flight scan against the photo being replaced.
-  if (scanAbortController) scanAbortController.abort();
+  if (state.scanAbortController) state.scanAbortController.abort();
   const url = URL.createObjectURL(file);
   const nextImg = new Image();
   nextImg.onload = () => {
-    img = nextImg;
-    fileName = file.name; // set before resetView() so its info-line update includes it
-    rotation = 0;
-    detections = [];
-    selectedId = null;
+    state.img = nextImg;
+    state.fileName = file.name; // set before resetView() so its info-line update includes it
+    state.rotation = 0;
+    state.detections = [];
+    state.selectedId = null;
     clearThumbnailCache();
-    lastStatusMessage = null; // new photo: don't carry over the previous one's status
+    state.lastStatusMessage = null; // new photo: don't carry over the previous one's status
     resetView();
     updateButtons();
     URL.revokeObjectURL(url);
@@ -1221,7 +1230,7 @@ fileInput.addEventListener("change", () => {
 async function restoreSession() {
   const stored = await loadSession();
   if (!stored) return; // storage unreadable; session-store.js has logged it
-  const { blob, state } = stored;
+  const { blob, state: saved } = stored;
   if (!blob) return; // nothing saved yet
 
   const url = URL.createObjectURL(blob);
@@ -1234,17 +1243,17 @@ async function restoreSession() {
   URL.revokeObjectURL(url);
   if (!loaded) return;
 
-  img = nextImg;
-  fileName = blob.name || ""; // set before resetView() so its info-line update includes it
-  rotation = state?.rotation || 0;
+  state.img = nextImg;
+  state.fileName = blob.name || ""; // set before resetView() so its info-line update includes it
+  state.rotation = saved?.rotation || 0;
   // Sessions saved before thumbnails moved into thumbnailCache carry a data
   // URL per box; drop those fields rather than persisting them onward.
-  detections = (state?.detections || []).map(({ _thumbKey, _thumbUrl, ...d }) => d);
-  nextId = detections.reduce((max, d) => Math.max(max, d.id), 0) + 1;
+  state.detections = (saved?.detections || []).map(({ _thumbKey, _thumbUrl, ...d }) => d);
+  state.nextId = state.detections.reduce((max, d) => Math.max(max, d.id), 0) + 1;
   resetView({ preserveDetections: true });
   updateButtons();
-  const label = fileName ? `"${fileName}"` : "previous scan";
-  setStatusMessage(`Restored ${label} (${detections.length} box(es))`);
+  const label = state.fileName ? `"${state.fileName}"` : "previous scan";
+  setStatusMessage(`Restored ${label} (${state.detections.length} box(es))`);
 }
 restoreSession();
 
@@ -1254,7 +1263,7 @@ restoreSession();
 // overlapping" first if a region got detected more than once by mistake;
 // every box left after that counts as one real board.
 goToGuideBtn.addEventListener("click", () => {
-  const numbers = detections
+  const numbers = state.detections
     .filter((d) => d.score != null && d.text && d.text.trim())
     .map((d) => d.text.trim());
   if (numbers.length === 0) return;

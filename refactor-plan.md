@@ -240,17 +240,29 @@ python3 -m http.server 8123        # frontend, from the repo root
       The auto path needs nothing here: a failed whole-photo tile produces no box to mark,
       and the status line already reports the count.
 
-## Deferred — the full `ocr.js` restructure
+## The full `ocr.js` restructure
 
-`ocr.js` is ~1300 lines spanning roughly ten concerns (config, persistence, canvas rendering,
+`ocr.js` is ~1260 lines spanning roughly ten concerns (config, persistence, canvas rendering,
 pointer interaction, scan queue, results-list DOM, status line, detection operations, button
-wiring, handoff). Steps 6 and 7 remove the parts that come out cleanly. What remains is glued
-by module-level mutable state (`detections`, `view`, `img`, `full`, `selectedId`,
-`hoverBoxId`) and by `redraw()`, which nearly everything calls; splitting it further means
-introducing an explicit state module with subscribe/emit first, then dividing into
-`canvas-view.js` / `interaction.js` / `scan.js` / `results-list.js`.
+wiring, handoff). Steps 6 and 7 removed the parts that came out cleanly. What remains is glued
+by ~25 module-level mutable `let`s (`detections`, `nextId`, `view`, `img`, `full`, `selectedId`,
+`hoverBoxId`, the scan-queue set, …) and by `redraw()` — `redrawCanvas()` + `renderResultsList()`
++ `persistState()` — which nearly every mutation calls.
 
-That is a real refactor of code with no test coverage, verified only by clicking.
+**Approach: one shared state object first, dependency-injected callbacks over pub/sub.** ES
+module live bindings are read-only from the importer's side, so `export let detections` cannot be
+reassigned inside an extracted `scan.js` and observed back here — sharing reassignable state
+across modules requires a single object held by reference. Consolidating the scattered `let`s
+into one `state` object is therefore the precondition every extraction shares, and is step 9
+below, done first. The subscribe/emit machinery floated in the earlier sketch is deferred, not
+adopted: once `state` is one passable object, the render coupling can most likely be met by
+passing `state` plus the flush callbacks into each module — the dependency-injection style the
+repo already uses (`resolveTileSize({ … })`, `persistState({ rotation, detections })`) — which is
+simpler and lands in smaller verifiable steps than a pub/sub layer. Whether pub/sub is ever
+needed is left until the first real extraction (step 11) shows whether plain callbacks suffice.
+
+The characterization suite below is the safety net that makes this a mechanical, test-backed
+refactor rather than one "verified only by clicking."
 
 **The tooling question is settled.** `npm run test:browser` (July 2026) drives headless
 Chrome over the DevTools Protocol using only Node's own APIs — no dependency, no build
@@ -259,7 +271,7 @@ and Chrome instance on OS-assigned ports, a throwaway profile removed on exit, a
 skips itself when no Chrome is installed. Waits poll for an observable condition; there
 are no fixed sleeps.
 
-**Characterization coverage is now in place.** `test/browser/` holds five specs, 31 tests
+**Characterization coverage is now in place.** `test/browser/` holds five specs, 32 tests
 total, all green against the current code and all mutation-tested against the specific
 behaviour each one exists to pin down:
 
@@ -272,9 +284,10 @@ behaviour each one exists to pin down:
   declined confirmation).
 - `session.spec.mjs` (5) — reload restores photo + boxes exactly, Clear removes both and
   stays cleared, rotation remaps box coordinates.
-- `scan-lifecycle.spec.mjs` (4) — plain cancel, the step-3 carry-over fix (re-running
-  while a cancelled drain is still tearing down), and a cancelled manual region staying
-  retryable rather than wedging behind a stale placeholder.
+- `scan-lifecycle.spec.mjs` (5) — plain cancel, the step-3 carry-over fix (re-running
+  while a cancelled drain is still tearing down), a cancelled manual region staying
+  retryable rather than wedging behind a stale placeholder, and the step-8 503 fix (an
+  errored manual region reads "failed — try again" and stays retryable, not settled empty).
 
 Shared boot/gesture helpers live in `fixtures.mjs`, factored out once a second spec needed
 them, so they can't drift between specs the way `harness.mjs`'s job is to prevent Chrome
@@ -294,8 +307,77 @@ mutation testing found in step 7:
   could occasionally beat the delete. Fixed by polling IndexedDB directly for the delete
   to land, rather than a fixed sleep.
 
-What remains before the restructure itself is the author's call, not a coverage gap: see
-the tooling paragraph above, now resolved, and the open question just below.
+The steps below hold the same discipline as 1–8: each lands behaviour-preserving, green on
+both suites, and is reviewed before the next. Only step 9 is detailed — the exact shape of
+10–12 depends on what step 9 and the first extraction reveal, so they are sketched, not fixed.
+
+## Step 9 — consolidate shared mutable state into one `state` object
+
+- [x] **Change.** Landed as a single `const state = {…}` (18 fields: `img, fileName, rotation,
+      full, view, minScale, detections, nextId, selectedId, hoverBoxId, hoverDeleteId, draftBox,
+      scanQueue, pendingPlaceholders, tileOverlay, scanAbortController, suppressScanSummary,
+      lastStatusMessage`) with every read/write rewritten to `state.<field>` — 308 references.
+      These are the fields more than one future module reads or reassigns; a shared object is
+      the only way an extracted module can reassign them and have `ocr.js` observe it (module
+      live bindings are import-side read-only). No behavioural change, no file moved. The
+      `restoreSession()` local named `state` (the persisted snapshot) was renamed to `saved` to
+      free the name. The rename was done with a small string/comment/template-aware scanner
+      rather than a blind regex, so the target words that also appear in prose ("full" in
+      "full photo", "view" in "view-only", "rotation" in the meta line) stayed bare in the
+      strings and comments that contain them — only code and `${…}` interpolations were rewritten.
+- [x] **Verify.** `node --check ocr.js` clean, `npm test` 85/85, `npm run test:browser` 32/32
+      (all interaction/scan/session/list/tiling paths, so a missed reference on any exercised
+      path would throw a `ReferenceError` the specs' `consoleErrors` assertions catch). Backed by
+      a static sweep re-running the same classifier in check mode: the only bare target names
+      left in code regions are the `const state` property keys and the two object-literal keys in
+      `persistState({ rotation:, detections: })` — zero stray references in executable code.
+      Two mechanical gotchas the blind form of this rename would have shipped, both caught here
+      and worth heeding for the rename-heavy steps to come:
+      - **Object-literal keys look like bare reads.** `persistState({ rotation, detections })`
+        was hand-expanded to `{ rotation: state.rotation, … }` before the pass, and the scanner
+        then prefixed the *keys* too (`{ state.rotation: … }`) — a parse error, caught by
+        `node --check`. Fixed by leaving the keys bare.
+      - **Spread has a leading dot.** `[...detections, …]` was skipped by the `(?<!\.)`
+        property-access guard, because `...` ends in `.`. That produced a live
+        `ReferenceError: detections is not defined` in `ensureWorkerRunning`, caught by the
+        tiling spec, not by `node --check`. Fixed to `[...state.detections, …]`; a grep for
+        `\.\.\.(<names>)` confirmed it was the only spread of a target.
+- [x] **Consider.** Done in one pass, not staged by concern-group: the suite verifies the whole,
+      and a partial rename would leave a mixed `state.x` / bare-`y` idiom mid-file for no gain.
+      The interaction-transient `let`s — `dragging, panStart, selectCandidateId,
+      pointerDownDisplayPos, editStartBounds, editStartSource, resizeHandleIndex` — stayed bare
+      as planned: only the pointer handlers touch them, so they need no cross-module sharing
+      until `interaction.js` is extracted (they consolidate then, into `state` or an
+      interaction-scoped object).
+
+## Step 10 — establish the render/flush seam  (sketch)
+
+- [ ] **Change.** Gather the flush functions an extracted module must call back into —
+      `redraw`, `redrawCanvas`, `renderResultsList`, `updateButtons`, `updateMeta`,
+      `setStatusMessage` — into one passable unit, so a module takes `(state, render)` rather
+      than closing over six free functions. Whether this is a standalone step or folds into
+      step 11's diff depends on how large step 11 looks once step 9 lands; on its own it is
+      near-churn until a module boundary actually crosses it.
+
+## Step 11 — extract `scan.js`  (sketch)
+
+- [ ] **Change.** Move the scan queue and worker (currently `recognizeTile`, `tileBoxesFor`,
+      `enqueueTile`, `marginFor`, `recognizePendingBoxes`, `ensureWorkerRunning`, plus the Run
+      OCR / Cancel wiring) into `scan.js`, taking `state` + the render seam as arguments. This
+      is the largest single cohesive block and the hardest consumer of shared state (it
+      reassigns `detections`, `nextId`, `selectedId`, the whole scan set), so proving the
+      `state`+callbacks pattern here de-risks the gentler extractions after. If callbacks turn
+      out not to suffice — an ordering problem the current synchronous `redraw()` calls hide —
+      this is where the pub/sub question reopens, with a concrete case rather than
+      speculatively.
+
+## Step 12+ — the remaining split  (sketch)
+
+- [ ] `results-list.js` (`renderResultsList`, `zoomToBox`, the thumbnail cache), then
+      `canvas-view.js` (the view transform and every `draw*` / `redrawCanvas`), then
+      `interaction.js` (the pointer/keyboard handlers and their private transients). Order and
+      boundaries firm up once step 11 shows how cleanly the `state` + render seam holds. `ocr.js`
+      ends as the wiring that constructs `state`, imports the modules, and binds them to the DOM.
 
 ## Related backlog
 
