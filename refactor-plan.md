@@ -180,28 +180,63 @@ python3 -m http.server 8123        # frontend, from the repo root
 
 ## Step 8 — a failed box stays retryable
 
-- [ ] **Change.** A manual region whose tiles all failed is currently indistinguishable from
-      one that genuinely holds no text: the worker's `catch` turns a failure into
-      `found = []`, and the region then sets `placeholder.attempted = true`. The box renders
-      "no text found", drops out of "Recognize new boxes" (which filters on `!d.attempted`),
-      and becomes eligible for "Prune empty" — so a transient 503 silently presents as a
-      settled negative result, and the work is thrown away rather than left to retry.
-      Track per-region whether any of its tiles errored (an `errored` flag on the
-      `pendingPlaceholders` entry, set beside the existing `errorCount++`). A region that
-      errored and found nothing keeps `attempted` false, so it stays "not yet recognized"
-      and remains eligible for a re-run the user triggers. Step 2's status line already
-      names the failure; this is about the box, not the message.
-      Deliberately no automatic retry — see step 2's Consider.
-- [ ] **Verify.** Browser spec, in `test/browser/`: stub `/ocr` to 503 for a manual region,
-      confirm the box stays pending (not "no text found"), that "Recognize new boxes" is
-      still enabled for it, and that a second run with the stub returning text resolves it
-      normally. Then mutation-test it — leaving `attempted = true` unconditionally must fail
-      the spec, or the spec is not testing the fix.
-- [ ] **Consider.** Whether a region that *partly* failed (some tiles returned text, others
-      503'd) should also stay pending. Splicing in a partial result loses the failed tiles
-      with no trace, but keeping the region pending discards text that was genuinely found.
-      Leaning towards: splice the partial result and let the status line carry the failure
-      count, since the alternative throws away good work. Undecided.
+- [x] **Change.** A manual region whose tiles all failed was indistinguishable from one that
+      genuinely holds no text: the worker's `catch` (ocr.js:922-929) turned a failure into
+      `found = []`, and the manual-completion branch then set `placeholder.attempted = true`.
+      The box rendered "no text found", dropped out of "Recognize new boxes" (which filters
+      on `!d.attempted`), and became eligible for "Prune empty" — so a transient 503 silently
+      presented as a settled negative result, and the work was thrown away rather than left
+      to retry. This applies regardless of region size: a hand-drawn box under the
+      single-cell threshold (`tile * 1.4`, ~1030px at the 736px prod tile size) still gets
+      exactly one `pendingPlaceholders` entry with `remaining: 1`, so it goes through the same
+      completion branch as a region split into many tiles.
+      Landed as:
+      - The per-tile catch (ocr.js:922-929) now sets `entry.errored = true` on
+        `pendingPlaceholders.get(item.placeholderId)` when `item.kind === "manual"`, beside
+        the existing `errorCount++`/`firstError`. The entry always exists here —
+        `recognizePendingBoxes()` (ocr.js:877) creates it before any of the region's tiles are
+        enqueued.
+      - The manual-completion branch: when `entry.found.length === 0` and `entry.errored`,
+        `placeholder.scanFailed = true` is set and `attempted` stays false — the region
+        remains "not yet recognized" and enabled for a re-run. The genuinely-empty case
+        (`!entry.errored`) is unchanged (`attempted = true`, `manualEmptyCount++`) and now also
+        clears a stale `scanFailed` from an earlier failed attempt on the same placeholder
+        object, so a second, truly-empty try doesn't keep showing the old failure state.
+      - `detections.js`'s `canvasLabelFor`/`listLabelFor` gained a third unrecognized state:
+        `scanFailed` (and not `attempted`) reads as **"failed — try again"**, distinct from
+        both "not yet recognized" (never sent) and "no text found" (settled empty). Without
+        this the fix would have been invisible — the box would silently behave differently
+        (stay retryable) while displaying identically to a never-tried box. `colorFor` was
+        deliberately left alone: a `scanFailed` box still colors as never-tried grey, which is
+        fine since the label already carries the distinction and the button-enablement logic
+        only ever looked at `attempted`.
+      Step 2's status line already names the failure count and first error message; this adds
+      a durable, per-box signal, since the status line is transient and gets overwritten by
+      the next scan action. Deliberately no automatic retry — see step 2's Consider.
+      The cancel/abort teardown path (ocr.js:983-991) needed no change: it already deletes an
+      unresolved entry without ever setting `attempted = true`, so a region cut off by
+      cancellation was already retryable before this step.
+- [x] **Verify.** `node --check` clean, `npm test` 85/85 (up from 84 — one new unit test for
+      the `scanFailed` label state, plus two existing tests extended). Browser spec added to
+      `test/browser/scan-lifecycle.spec.mjs`: stub `/ocr` to 503 for a manual region, confirm
+      the box stays pending (`recognizePending` still enabled, `pruneEmpty` still disabled),
+      that its label reads "failed — try again", and that a second run with the stub restored
+      to normal resolves it to real text. `npm run test:browser` 32/32 (up from 31).
+      Mutation-tested per the plan's own bar: reverting the `entry.errored` gate (making the
+      completion branch unconditionally set `attempted = true` again, as before this step)
+      failed the new spec's first assertion — the box became ineligible for
+      "Recognize new boxes" again, confirming the spec actually exercises the fix rather than
+      passing regardless.
+- [x] **Consider.** Resolved: splice the partial result whenever `entry.found.length > 0`,
+      regardless of `entry.errored` — same as today, no special case added. A region that got
+      some text back is treated as a completed (if incomplete) result rather than held back,
+      because keeping it pending would discard text genuinely found and there's no way to
+      re-request only the failed tiles later anyway (the whole region gets re-tiled and
+      re-sent on the next "Recognize new boxes" run, redoing the tiles that already
+      succeeded). `errorCount`/`firstError` already carry the failure into the status line, so
+      the user still sees that the region's result is incomplete even though the box itself
+      moves on. Only the all-failed (`entry.found.length === 0`) case gets the new
+      stays-pending behaviour above.
       The auto path needs nothing here: a failed whole-photo tile produces no box to mark,
       and the status line already reports the count.
 

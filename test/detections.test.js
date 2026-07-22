@@ -35,6 +35,14 @@ test("canvasLabelFor: unrecognized boxes describe their state", () => {
   assert.equal(canvasLabelFor({ score: null, attempted: true }), "no text found");
 });
 
+test("canvasLabelFor: a region whose tiles errored stays distinct from both settled states", () => {
+  const failed = { score: null, attempted: false, scanFailed: true };
+  assert.equal(canvasLabelFor(failed), "failed — try again");
+  // attempted wins if both were ever true at once -- a settled empty result
+  // should never be overridden back into "retry" wording.
+  assert.equal(canvasLabelFor({ score: null, attempted: true, scanFailed: true }), "no text found");
+});
+
 test("listLabelFor: recognized boxes carry the score to three decimals", () => {
   assert.equal(listLabelFor({ score: 0.8, text: "M7800" }), "M7800  (score 0.800)");
 });
@@ -42,8 +50,10 @@ test("listLabelFor: recognized boxes carry the score to three decimals", () => {
 test("listLabelFor: unrecognized boxes match the canvas wording", () => {
   const pending = { score: null, attempted: false };
   const empty = { score: null, attempted: true };
+  const failed = { score: null, attempted: false, scanFailed: true };
   assert.equal(listLabelFor(pending), canvasLabelFor(pending));
   assert.equal(listLabelFor(empty), canvasLabelFor(empty));
+  assert.equal(listLabelFor(failed), canvasLabelFor(failed));
 });
 
 test("selectNonOverlapping: keeps the higher-scored box from an overlapping pair", () => {

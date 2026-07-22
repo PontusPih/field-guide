@@ -144,6 +144,52 @@ describe("scan cancel and resume", { skip: chromePath ? false : "no Chrome found
     assert.match(label, /T\d/, "the retried box should end up recognized");
   });
 
+  test("a manual region whose tile errors (503) stays retryable, not settled as empty", async () => {
+    // refactor-plan.md step 8: a transient backend failure must not present as
+    // a genuine "no text found" -- the box should stay pending and available.
+    await page.evaluate(`
+      window.__realFetch = window.fetch.bind(window);
+      window.fetch = (url, opts) => {
+        if (!String(url).includes("/ocr")) return window.__realFetch(url, opts);
+        return Promise.resolve(new Response("queue full", { status: 503 }));
+      };
+      true
+    `);
+    await loadSyntheticPhoto(page);
+    const rect = await stageRect(page);
+    await dragFrac(page, rect, 0.15, 0.15, 0.45, 0.35);
+    await page.waitFor(`document.querySelectorAll("#results li").length === 1`, "box drawn");
+
+    await page.evaluate(`document.getElementById("recognizePending").click(); true`);
+    await scanIdle(page);
+
+    assert.equal(await page.evaluate(`document.getElementById("recognizePending").disabled`), false,
+      "a region that only ever errored must stay eligible for another attempt");
+    assert.equal(await page.evaluate(`document.getElementById("pruneEmpty").disabled`), true,
+      "an errored region is not a settled empty result, so Prune empty must not touch it");
+    const label = await page.evaluate(`document.querySelector("#results .result-label").textContent`);
+    assert.match(label, /failed.*try again/,
+      "the box must read distinctly from a never-tried box, or the fix is invisible");
+
+    // Retry for real, with the stub now answering normally -- confirms the
+    // region isn't wedged, just held open.
+    await page.evaluate(`
+      window.fetch = (url, opts) => {
+        if (!String(url).includes("/ocr")) return window.__realFetch(url, opts);
+        const found = [{ box: [[10, 10], [60, 10], [60, 30], [10, 30]], text: "T1", score: 0.9 }];
+        return Promise.resolve(new Response(JSON.stringify(found), {
+          status: 200, headers: { "content-type": "application/json" },
+        }));
+      };
+      true
+    `);
+    await page.evaluate(`document.getElementById("recognizePending").click(); true`);
+    await scanIdle(page);
+
+    const resolved = await page.evaluate(`document.querySelector("#results .result-label").textContent`);
+    assert.match(resolved, /T1/, "the retried box should end up recognized");
+  });
+
   test("no page errors were logged across any of the above", () => {
     assert.deepEqual(page.consoleErrors, []);
   });

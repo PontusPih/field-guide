@@ -1,11 +1,18 @@
 // What a detection looks like and how overlapping ones are resolved.
 //
-// A detection is `{ id, box, text, score, attempted, source }`. Three states
-// matter throughout, and every function here reads them the same way:
+// A detection is `{ id, box, text, score, attempted, scanFailed, source }`.
+// The states that matter, and every function here reads them the same way:
 //
-//   score != null              recognized; score is the confidence
-//   score == null, !attempted  drawn but not yet sent for recognition
-//   score == null, attempted   sent, and the backend found no text
+//   score != null                    recognized; score is the confidence
+//   score == null, !attempted        drawn but not yet sent for recognition
+//   score == null, !attempted,
+//                  scanFailed        sent, a tile errored, none found text --
+//                                    stays retryable, not a settled result
+//   score == null, attempted         sent, and the backend found no text
+//
+// `scanFailed` is manual-region-only (see ocr.js's ensureWorkerRunning) and is
+// always paired with `!attempted`: a region either settles as "no text found"
+// or stays open for retry, never both.
 //
 // Pure and DOM-free, so it is testable with `node --test`. Canvas and rect
 // math live in geometry.js; this is the layer above it.
@@ -25,12 +32,14 @@ function colorFor(detection) {
 // Canvas hover label: text only. The score shows in the results list.
 function canvasLabelFor(detection) {
   if (detection.score != null) return detection.text;
-  return detection.attempted ? "no text found" : "not yet recognized";
+  if (detection.attempted) return "no text found";
+  return detection.scanFailed ? "failed — try again" : "not yet recognized";
 }
 
 function listLabelFor(detection) {
   if (detection.score != null) return `${detection.text}  (score ${detection.score.toFixed(3)})`;
-  return detection.attempted ? "no text found" : "not yet recognized";
+  if (detection.attempted) return "no text found";
+  return detection.scanFailed ? "failed — try again" : "not yet recognized";
 }
 
 // Greedy highest-score-first selection: keep an item unless its box's bounds

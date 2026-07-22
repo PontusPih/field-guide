@@ -926,6 +926,10 @@ async function ensureWorkerRunning() {
         found = [];
         errorCount++;
         firstError ??= err.message;
+        // Tag the region so a manual completion below can tell "this tile
+        // errored" apart from "this tile genuinely found nothing" -- see the
+        // entry.errored check further down.
+        if (item.kind === "manual") pendingPlaceholders.get(item.placeholderId).errored = true;
       }
       if (signal.aborted) break; // discard a result that arrived the instant abort() landed
 
@@ -951,8 +955,16 @@ async function ensureWorkerRunning() {
       manualRegionCount++;
       if (!entry.gotUpscaleBoost) manualNoBoostCount++;
       if (entry.found.length === 0) {
-        entry.placeholder.attempted = true; // stays visible, marked "no text found"
-        manualEmptyCount++;
+        if (entry.errored) {
+          // A tile errored and none of the region's tiles found anything --
+          // leave attempted false so the region stays "not yet recognized"
+          // (retryable) instead of settling as a genuine empty result.
+          entry.placeholder.scanFailed = true;
+        } else {
+          entry.placeholder.attempted = true; // stays visible, marked "no text found"
+          entry.placeholder.scanFailed = false; // clear a stale flag from an earlier failed attempt
+          manualEmptyCount++;
+        }
       } else {
         const newDetections = entry.found.map((d) => ({ id: nextId++, ...d, source: "manual" }));
         manualFoundCount += newDetections.length;
