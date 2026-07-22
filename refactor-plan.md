@@ -391,16 +391,52 @@ both suites, and is reviewed before the next. Only step 9 is detailed — the ex
       `ocr.js`, and belongs with the detection operations if those are later grouped, not with the
       scan worker.
 
-## Step 12+ — the remaining split  (sketch)
+## Step 12 — extract `canvas-view.js`
 
-- [ ] `results-list.js` (`renderResultsList`, `zoomToBox`, the thumbnail cache), then
-      `canvas-view.js` (the view transform and every `draw*` / `redrawCanvas`), then
-      `interaction.js` (the pointer/keyboard handlers and their private transients). The
-      `state` + injected-callbacks seam held cleanly through step 11, so these follow the same
-      `create*({ state, … })` factory shape. Likely ordering: `canvas-view.js` first (the render
-      core the others depend on — `redrawCanvas` and the `draw*` helpers), then `results-list.js`
-      and `interaction.js`, which both call into it. `ocr.js` ends as the wiring that constructs
-      `state`, imports the modules, and binds them to the DOM.
+- [x] **Change.** The render core moved to `canvas-view.js` (235 lines) as a
+      `createCanvasView({ state, ctx, display, config, updateMeta })` factory. It holds the view
+      transform (`updateViewOffsets`, `clampView`, `zoomTo`, `zoomToBox`) and all drawing
+      (`redrawCanvas` plus the private `strokeBoxPath`, `drawLabelText`, `drawDetection`,
+      `drawResizeHandles`, `drawDeleteHotspot`, `drawTileOverlay`), and returns the eight entry
+      points the rest of the app calls (`redrawCanvas`, `zoomTo`, `zoomToBox`,
+      `updateViewOffsets`, `clampView`, `selectedDetection`, `deleteHotspotDisplayPos`,
+      `visibleDeleteHotspotIds`). Injected deps: `state`, the canvas `display` + its `ctx`, the
+      three drawing constants (`MAX_SCALE`, `RESIZE_HANDLE_RADIUS`, `DELETE_HOTSPOT_RADIUS`), and
+      `updateMeta` — the one retained function the view ops call after a view change to refresh
+      the zoom%. Geometry/detections helpers come through `canvas-view.js`'s own imports.
+      **Key move to keep the diff small:** the factory's return is destructured back into consts
+      of the same names in `ocr.js` (`const { redrawCanvas, zoomTo, … } = createCanvasView(…)`),
+      so the ~30 call sites in `ocr.js`'s retained code (resetView, the interaction handlers,
+      the results list, `redraw`) did **not** change — only the definitions moved. `redraw`
+      stays in `ocr.js` as the composition root's flush (`redrawCanvas()` + `renderResultsList()`
+      + `persistState()`), so `canvas-view.js` has no dependency on the results list. `ocr.js` is
+      down to 838 lines (from 1029). `rotatedCanvas`, `resetView`, and the status-line functions
+      (`metaLine`, `updateMeta`) stayed in `ocr.js` — orchestration and status, not pure render.
+- [x] **Verify.** `node --check` clean on both; `npm test` 85/85; `npm run test:browser` 32/32 —
+      the interaction and session specs drive draw/select/resize/move/delete/pan/zoom/rotate/hover,
+      i.e. every render and view path, and a grep confirmed the six now-private draw helpers have
+      zero references left in `ocr.js`. Hoisting holds: `createCanvasView` runs at module init but
+      only after `state`/`ctx`/`display`/config exist, `updateMeta` is a hoisted declaration, and
+      the destructured consts are initialised before any handler or `restoreSession()` runs.
+- [x] **Consider.** The destructure-back-to-consts trick is the reason this large-looking move
+      was low-churn: it defers touching the interaction/results-list call sites until those
+      modules are themselves extracted, rather than rewiring them twice. It does mean `ocr.js`
+      still calls these as bare names (via the consts) rather than `canvasView.x` — when
+      `interaction.js` and `results-list.js` come out they will take `canvasView` as an injected
+      dependency and call its methods explicitly, at which point the consts in `ocr.js` shrink to
+      only what the composition root itself still needs.
+
+## Step 13+ — the remaining split  (sketch)
+
+- [ ] `results-list.js` (`renderResultsList`, the thumbnail cache — `zoomToBox` already went to
+      canvas-view) and `interaction.js` (the pointer/keyboard handlers and their private
+      transients — `dragging`, `panStart`, `editStart*`, …). Both take `state` + `canvasView` +
+      the flush callbacks, same `create*({ state, … })` shape proven in steps 11–12. After both,
+      `ocr.js` is the composition root: it constructs `state`, resolves config, builds
+      `canvasView`/`scan`/`resultsList`/`interaction`, defines the small orchestration glue
+      (`redraw`, `resetView`, `rotatedCanvas`, the status-line functions, the detection ops and
+      button wiring), and binds everything to the DOM. That is the point to re-evaluate the
+      overall shape, per the standing agreement.
 
 ## Related backlog
 
