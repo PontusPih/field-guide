@@ -426,17 +426,79 @@ both suites, and is reviewed before the next. Only step 9 is detailed — the ex
       dependency and call its methods explicitly, at which point the consts in `ocr.js` shrink to
       only what the composition root itself still needs.
 
-## Step 13+ — the remaining split  (sketch)
+## Step 13 — extract `thumbnails.js`, `results-list.js`, `interaction.js`
 
-- [ ] `results-list.js` (`renderResultsList`, the thumbnail cache — `zoomToBox` already went to
-      canvas-view) and `interaction.js` (the pointer/keyboard handlers and their private
-      transients — `dragging`, `panStart`, `editStart*`, …). Both take `state` + `canvasView` +
-      the flush callbacks, same `create*({ state, … })` shape proven in steps 11–12. After both,
-      `ocr.js` is the composition root: it constructs `state`, resolves config, builds
-      `canvasView`/`scan`/`resultsList`/`interaction`, defines the small orchestration glue
-      (`redraw`, `resetView`, `rotatedCanvas`, the status-line functions, the detection ops and
-      button wiring), and binds everything to the DOM. That is the point to re-evaluate the
-      overall shape, per the standing agreement.
+The last three concerns, in one step (three files). After it, `ocr.js` is the composition root,
+and the overall shape gets re-evaluated per the standing agreement — including whether to bundle
+the render callbacks (`interaction.js` is the heaviest consumer and the concrete test of that).
+
+- [x] **`thumbnails.js`** (55 lines) — `createThumbnailCache({ state })` → `{ thumbnailDataUrl,
+      clear }`, owning the memoization `Map` and `MAX_THUMB_HEIGHT`, importing `boundsOf`. **Not
+      pure** — it reads the shared source canvas (`state.full`) and does canvas image work — but a
+      self-contained memoizing image service, keyed by box coordinates. Its own module rather
+      than a detail of the list because `clear()` is driven from *outside* the list: four call
+      sites (clearSession, clearDetections, rotate, load-new-photo) invalidate it when the source
+      pixels or the ids change. `ocr.js` builds it early (needs only `state`) and calls
+      `thumbnails.clear()`; `results-list.js` takes `thumbnailDataUrl` injected.
+- [x] **`results-list.js`** (112 lines) — `createResultsList({ state, resultsEl,
+      computeOverlapWarnings, thumbnailDataUrl, zoomToBox, updateButtons, redraw, redrawCanvas })`
+      → `{ renderResultsList }`, importing `colorFor`/`listLabelFor`. Stays DOM-imperative (builds
+      the `<li>`s and their row/find/delete handlers); extracting the cache strips the image work
+      out so it is just DOM + wiring. Destructured back to a `renderResultsList` const in `ocr.js`,
+      which `redraw` and `clearSession` still call by name.
+- [x] **`interaction.js`** (256 lines) — `createInteraction({ state, display, config, … })`,
+      which attaches the pointer/keyboard/wheel listeners itself and owns the interaction-transient
+      `let`s (`dragging`, `panStart`, `selectCandidateId`, `pointerDownDisplayPos`, `editStart*`,
+      `resizeHandleIndex`) as closure privates — settling the deferral from step 9. The heaviest
+      dependency surface: `state`, `display`, four thresholds, ten geometry imports, six
+      canvas-view functions (`selectedDetection`, `deleteHotspotDisplayPos`,
+      `visibleDeleteHotspotIds`, `redrawCanvas`, `zoomTo`, `clampView`), and five `ocr.js`
+      callbacks (`updateButtons`, `redraw`, `updateMeta`, `applyEditedBox`, `deleteSelected`).
+      `deleteSelected` stayed in `ocr.js` as a detection op and is injected for the keydown
+      handler. That 17-entry surface is the concrete input to the re-evaluation below.
+- [x] **Verify.** `node --check` clean on all three new files and `ocr.js`; `npm test` 85/85;
+      `npm run test:browser` 32/32. The interaction, list-actions, and session specs drive every
+      path across the three modules (draw/select/resize/move/delete/keyboard/pan/zoom, row
+      click/find/delete/hover, thumbnail crops, clear). A grep confirmed the transients and the
+      interaction helpers have zero references left in `ocr.js`. Done in three sub-extractions
+      (thumbnails → results-list → interaction), each verified green before the next, to isolate
+      any failure — none arose. Factory init order is `thumbnails` (159) → `canvasView` (241) →
+      `interaction` (366) → `scan` (431) → `resultsList` (450); every const a later factory reads
+      is initialised before it, and the factories only *capture* the hoisted `ocr.js` callbacks
+      (invoked later on events / at `restoreSession`), so no temporal-dead-zone hazard.
+- [x] **After.** `ocr.js` is 541 lines (from 1273 at the restructure's start) and is now the
+      composition root: config resolution, the `state` object, the six factory calls + button
+      wiring, the orchestration glue (`redraw`, `resetView`, `rotatedCanvas`, `metaLine`/
+      `updateMeta`/`setStatusMessage`), the detection ops (`computeOverlapWarnings`,
+      `removeDetections`, `pruneOverlapping`, `pruneEmpty`, `applyEditedBox`, `deleteSelected`,
+      `rotate`), and session load/restore. See "Re-evaluation" below.
+
+## Re-evaluation — the shape after step 13
+
+The restructure is done: `ocr.js` 1273 → 541 lines, split into six focused modules
+(`geometry`, `detections`, `tiling`, `session-store`, `backend-config` — pure/leaf — plus the
+stateful factories `scan`, `canvas-view`, `thumbnails`, `results-list`, `interaction`). Every
+module is one concern, dependencies are explicit and one-directional (no cycles), and the whole
+is backed green by 85 unit + 32 browser tests throughout.
+
+**The standing question — bundle the render callbacks?** `interaction.js` injects 17 things;
+`scan.js` and `results-list.js` 8 each. Much of that repetition is the same flush handful —
+`redraw`, `redrawCanvas`, `updateButtons`, `updateMeta`, `setStatusMessage` — passed to every
+consumer. Options, to decide together:
+
+- **(a) Leave as-is.** The lists are long but honest: each module declares exactly what it
+  touches. No indirection to trace. The wiring is concentrated in `ocr.js`, which is what a
+  composition root is for.
+- **(b) Bundle the flush handful into one `render` object** passed as a single param
+  (`createScan({ state, config, render, … })`). Trims each consumer's signature by ~4 entries
+  and names the seam; still direct calls (`render.redraw()`), still traceable. This is the
+  step-10 idea, now with three consumers to justify it.
+- **(c) Event bus.** Consumers emit ("detections changed") and hold no render refs. Fuller
+  decoupling, but trades visible wiring for indirection that's harder to follow; step 11 already
+  found direct callbacks sufficient. Not recommended unless a concrete ordering problem appears.
+
+Leaning **(b)** — three consumers now share the same flush set, which is the threshold that
+turns it from premature churn into a real simplification. Left for the author's call.
 
 ## Related backlog
 

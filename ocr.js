@@ -32,6 +32,9 @@ import {
 } from "./session-store.js";
 import { createScan } from "./scan.js";
 import { createCanvasView } from "./canvas-view.js";
+import { createThumbnailCache } from "./thumbnails.js";
+import { createResultsList } from "./results-list.js";
+import { createInteraction } from "./interaction.js";
 
 // Dev/prod switch, the same signal backend-config.js uses for BACKEND_URL.
 // Dev skips the size limits a memory-constrained prod backend needs -- see
@@ -151,13 +154,9 @@ const state = {
   hoverBoxId: null,    // id of the box the cursor is currently over (declutter: reveals full label)
 };
 
-let dragging = null; // null | "pan" | "draw" | "select-candidate" | "move" | "resize"
-let panStart = null; // { px, py, vx, vy }
-let selectCandidateId = null;
-let pointerDownDisplayPos = null;
-let editStartBounds = null; // { minX, minY, maxX, maxY }, source coords, at drag start
-let editStartSource = null; // pointer's source-space position at drag start (for "move")
-let resizeHandleIndex = null; // which corner (see cornersOf), for "resize"
+// Memoized results-list thumbnails; built early so the clear-on-image-change
+// call sites below can reach it. clear() on new photo / rotate / clear.
+const thumbnails = createThumbnailCache({ state });
 
 async function clearSession() {
   if (!state.img && state.detections.length === 0) return;
@@ -178,7 +177,7 @@ async function clearSession() {
   state.draftBox = null;
   state.hoverDeleteId = null;
   state.hoverBoxId = null;
-  clearThumbnailCache();
+  thumbnails.clear();
 
   fileInput.value = "";
   ctx.clearRect(0, 0, display.width, display.height);
@@ -211,7 +210,7 @@ function clearDetections() {
   state.draftBox = null;
   state.hoverDeleteId = null;
   state.hoverBoxId = null;
-  clearThumbnailCache();
+  thumbnails.clear();
   state.lastStatusMessage = null; // don't let a stale message survive the clear
 
   updateMeta(); // re-renders the (now blank) status line
@@ -361,212 +360,24 @@ function updateButtons() {
   clearBoxesBtn.disabled = state.detections.length === 0;
 }
 
-// The canvas's rendered CSS size can differ from its internal pixel buffer
-// (e.g. the flex layout shrinking it on a narrow window). Scales into
-// internal-pixel space, which hit-testing and view math assume.
-function pointerDisplayPos(e) {
-  const r = display.getBoundingClientRect();
-  const scaleX = display.width / r.width;
-  const scaleY = display.height / r.height;
-  return { x: (e.clientX - r.left) * scaleX, y: (e.clientY - r.top) * scaleY };
-}
-
-function tryDeleteAtClick(p) {
-  const ids = [...visibleDeleteHotspotIds()];
-  if (ids.length === 0) return false;
-  const hotspots = ids.map((id) => deleteHotspotDisplayPos(state.detections.find((d) => d.id === id)));
-  const idx = nearestWithinRadius(p, hotspots, DELETE_HOVER_RADIUS);
-  if (idx < 0) return false;
-
-  const hitId = ids[idx];
-  state.detections = state.detections.filter((d) => d.id !== hitId);
-  if (state.selectedId === hitId) state.selectedId = null;
-  if (state.hoverDeleteId === hitId) state.hoverDeleteId = null;
-  updateButtons();
-  redraw();
-  return true;
-}
-
-display.addEventListener("pointerdown", (e) => {
-  if (!state.img) return;
-  const p = pointerDisplayPos(e);
-  if (tryDeleteAtClick(p)) return; // clicking a delete-X always wins
-
-  display.setPointerCapture(e.pointerId);
-  pointerDownDisplayPos = p;
-
-  if (e.ctrlKey && e.button === 0) {
-    dragging = "pan";
-    panStart = { px: p.x, py: p.y, vx: state.view.x, vy: state.view.y };
-    return;
-  }
-
-  const sp = toSource(p, state.view);
-
-  if (state.selectedId != null) {
-    const current = selectedDetection();
-    if (current) {
-      const bounds = boundsOf(current.box);
-      const handlePositions = cornersOf(bounds).map((c) => toDisplay(c, state.view));
-      const handleIdx = nearestWithinRadius(p, handlePositions, RESIZE_HANDLE_HIT_RADIUS);
-      if (handleIdx >= 0) {
-        dragging = "resize";
-        resizeHandleIndex = handleIdx;
-        editStartBounds = bounds;
-        return;
-      }
-      if (pointInPolygon(sp, current.box)) {
-        dragging = "move";
-        editStartBounds = bounds;
-        editStartSource = sp;
-        return;
-      }
-    }
-  }
-
-  const hitIndex = hitTestBoxes(sp, state.detections);
-  if (hitIndex >= 0) {
-    dragging = "select-candidate";
-    selectCandidateId = state.detections[hitIndex].id;
-  } else {
-    dragging = "draw";
-    state.draftBox = { x0: sp.x, y0: sp.y, x1: sp.x, y1: sp.y };
-  }
-});
-
-function updateHoverDelete(p) {
-  const hotspots = state.detections.map(deleteHotspotDisplayPos);
-  const idx = nearestWithinRadius(p, hotspots, DELETE_HOVER_RADIUS);
-  const newHoverId = idx >= 0 ? state.detections[idx].id : null;
-  if (newHoverId !== state.hoverDeleteId) {
-    state.hoverDeleteId = newHoverId;
-    return true;
-  }
-  return false;
-}
-
-function updateHoverBox(p) {
-  const sp = toSource(p, state.view);
-  const idx = hitTestBoxes(sp, state.detections);
-  const newHoverId = idx >= 0 ? state.detections[idx].id : null;
-  if (newHoverId !== state.hoverBoxId) {
-    state.hoverBoxId = newHoverId;
-    return true;
-  }
-  return false;
-}
-
-display.addEventListener("pointermove", (e) => {
-  const p = pointerDisplayPos(e);
-
-  if (!dragging) {
-    const changedDelete = updateHoverDelete(p);
-    const changedBox = updateHoverBox(p);
-    if (changedDelete || changedBox) redrawCanvas();
-    return;
-  }
-
-  if (dragging === "pan") {
-    state.view.x = panStart.vx - (p.x - panStart.px) / state.view.scale;
-    state.view.y = panStart.vy - (p.y - panStart.py) / state.view.scale;
-    clampView();
-    updateMeta();
-    redrawCanvas(); // view-only: no list content changed, nothing to persist
-  } else if (dragging === "draw") {
-    const sp = toSource(p, state.view);
-    state.draftBox.x1 = sp.x;
-    state.draftBox.y1 = sp.y;
-    redrawCanvas();
-  } else if (dragging === "move") {
-    const sp = toSource(p, state.view);
-    const dx = sp.x - editStartSource.x;
-    const dy = sp.y - editStartSource.y;
-    const b = editStartBounds;
-    selectedDetection().box = normalizedRectBox({
-      x0: b.minX + dx, y0: b.minY + dy, x1: b.maxX + dx, y1: b.maxY + dy,
-    });
-    redrawCanvas();
-  } else if (dragging === "resize") {
-    const sp = toSource(p, state.view);
-    const bounds = resizedBounds(resizeHandleIndex, sp, editStartBounds);
-    selectedDetection().box = normalizedRectBox(bounds);
-    redrawCanvas();
-  }
-  // "select-candidate": no visual feedback until pointerup — a click selects
-  // the box before its handles/body become draggable.
-});
-
-display.addEventListener("pointerup", (e) => {
-  if (!dragging) return;
-  const p = pointerDisplayPos(e);
-  const moved = distance(p, pointerDownDisplayPos);
-
-  if (dragging === "draw") {
-    if (moved >= CLICK_THRESHOLD_PX) {
-      state.detections.push({
-        id: state.nextId++,
-        box: normalizedRectBox(state.draftBox),
-        text: null,
-        score: null,
-        source: "manual",
-      });
-      state.selectedId = state.detections[state.detections.length - 1].id;
-    } else {
-      state.selectedId = null; // click on empty canvas: deselect
-    }
-    state.draftBox = null;
-  } else if (dragging === "select-candidate") {
-    state.selectedId = state.selectedId === selectCandidateId ? null : selectCandidateId;
-    selectCandidateId = null;
-  } else if (dragging === "move" || dragging === "resize") {
-    const detection = selectedDetection();
-    if (moved >= CLICK_THRESHOLD_PX) {
-      if (detection) applyEditedBox(detection, detection.box);
-    } else if (dragging === "move") {
-      state.selectedId = null; // click (no real drag) on the selected box's body: deselect
-    }
-    editStartBounds = null;
-    editStartSource = null;
-    resizeHandleIndex = null;
-  }
-
-  dragging = null;
-  updateButtons();
-  redraw();
-});
-
-display.addEventListener("pointerleave", () => {
-  if (state.hoverDeleteId != null || state.hoverBoxId != null) {
-    state.hoverDeleteId = null;
-    state.hoverBoxId = null;
-    redrawCanvas();
-  }
-});
-
-display.addEventListener("wheel", (e) => {
-  if (!state.img) return;
-  e.preventDefault();
-  const anchor = pointerDisplayPos(e);
-  if (e.ctrlKey) {
-    // Per-event factor scales with the gesture's own magnitude (deltaY), so a
-    // trackpad's sparse early pinch events zoom less than a later fast burst.
-    // Clamped so a large deltaY spike can't jump more than ~1.4x in one event.
-    const factor = Math.max(0.7, Math.min(1.4, Math.exp(-e.deltaY * ZOOM_SENSITIVITY)));
-    zoomTo(state.view.scale * factor, anchor);
-  } else {
-    state.view.x += e.deltaX / state.view.scale;
-    state.view.y += e.deltaY / state.view.scale;
-    clampView();
-    updateMeta();
-    redrawCanvas(); // view-only: no list content changed, nothing to persist
-  }
-}, { passive: false });
-
-window.addEventListener("keydown", (e) => {
-  if ((e.key === "Delete" || e.key === "Backspace") && state.selectedId != null) {
-    e.preventDefault();
-    deleteSelected();
-  }
+// Pointer, keyboard, and wheel interaction is wired in interaction.js; it
+// attaches its own listeners and owns the drag-transient state, given the shared
+// state and the view/detection callbacks it drives.
+createInteraction({
+  state,
+  display,
+  config: { CLICK_THRESHOLD_PX, DELETE_HOVER_RADIUS, RESIZE_HANDLE_HIT_RADIUS, ZOOM_SENSITIVITY },
+  selectedDetection,
+  deleteHotspotDisplayPos,
+  visibleDeleteHotspotIds,
+  redrawCanvas,
+  zoomTo,
+  clampView,
+  updateButtons,
+  redraw,
+  updateMeta,
+  applyEditedBox,
+  deleteSelected,
 });
 
 function deleteSelected() {
@@ -607,7 +418,7 @@ function rotate(delta) {
     box: d.box.map((pt) => rotatePoint(pt, delta, oldW, oldH)),
   }));
   state.rotation = (state.rotation + delta + 360) % 360;
-  clearThumbnailCache(); // `full` is re-rendered, so every cached crop is stale
+  thumbnails.clear(); // `full` is re-rendered, so every cached crop is stale
   resetView({ preserveDetections: true });
   updateButtons();
 }
@@ -633,127 +444,19 @@ runOcrBtn.addEventListener("click", scan.runFullScan);
 cancelScanBtn.addEventListener("click", scan.cancelScan);
 recognizePendingBtn.addEventListener("click", scan.recognizePendingBoxes);
 
-const MAX_THUMB_HEIGHT = 36; // display px
-
-// detection id -> { key, url }, key being the box coordinates, so editing a
-// box re-crops it. Held here rather than on the detection objects themselves:
-// persistState() serialises `detections` wholesale, so a data URL per box
-// would be written to IndexedDB on every save.
-const thumbnailCache = new Map();
-
-// Ids restart at 1 after a clear, and `full`'s contents change on rotate or a
-// new photo -- either way the cached crops no longer describe their ids.
-function clearThumbnailCache() {
-  thumbnailCache.clear();
-}
-
-function thumbnailDataUrl(detection) {
-  const key = JSON.stringify(detection.box);
-  const cached = thumbnailCache.get(detection.id);
-  if (cached && cached.key === key) return cached.url;
-
-  const b = boundsOf(detection.box);
-  const w = Math.max(1, Math.round(b.maxX - b.minX));
-  const h = Math.max(1, Math.round(b.maxY - b.minY));
-  const scale = Math.min(1, MAX_THUMB_HEIGHT / h);
-  const outW = Math.max(1, Math.round(w * scale));
-  const outH = Math.max(1, Math.round(h * scale));
-
-  const c = document.createElement("canvas");
-  c.width = outW;
-  c.height = outH;
-  c.getContext("2d").drawImage(state.full, b.minX, b.minY, w, h, 0, 0, outW, outH);
-
-  const url = c.toDataURL("image/png");
-  thumbnailCache.set(detection.id, { key, url });
-  return url;
-}
-
-function renderResultsList() {
-  resultsEl.innerHTML = "";
-  const overlapWarnings = computeOverlapWarnings();
-  state.detections.forEach((d, i) => {
-    const li = document.createElement("li");
-    li.className = "result-row";
-    li.style.cursor = "pointer";
-    li.style.fontWeight = d.id === state.selectedId ? "bold" : "normal";
-
-    const thumb = document.createElement("img");
-    thumb.className = "result-thumb";
-    thumb.src = thumbnailDataUrl(d);
-    thumb.alt = "";
-
-    const info = document.createElement("div");
-    info.className = "result-info";
-
-    const label = document.createElement("span");
-    label.className = "result-label";
-    label.textContent = `#${i + 1}  ${listLabelFor(d)}`;
-    label.style.color = colorFor(d);
-    info.append(label);
-
-    const overlapsWith = overlapWarnings.get(d.id);
-    if (overlapsWith) {
-      const warn = document.createElement("span");
-      warn.className = "overlap-warning";
-      warn.textContent = `⚠ overlaps #${overlapsWith.join(", #")}`;
-      warn.title = "This box's region overlaps another — likely a duplicate of the same label";
-      info.append(warn);
-    }
-
-    const icons = document.createElement("span");
-    icons.className = "result-icons";
-
-    const findBtn = document.createElement("button");
-    findBtn.type = "button";
-    findBtn.className = "icon-btn";
-    findBtn.title = "Pan/zoom to this box";
-    findBtn.textContent = "\u{1F50D}"; // 🔍
-    findBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      state.selectedId = d.id;
-      zoomToBox(d);
-      updateButtons();
-      redraw();
-    });
-
-    const delBtn = document.createElement("button");
-    delBtn.type = "button";
-    delBtn.className = "icon-btn";
-    delBtn.title = "Delete this box";
-    delBtn.textContent = "✕"; // ✕
-    delBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      state.detections = state.detections.filter((x) => x.id !== d.id);
-      if (state.selectedId === d.id) state.selectedId = null;
-      if (state.hoverDeleteId === d.id) state.hoverDeleteId = null;
-      if (state.hoverBoxId === d.id) state.hoverBoxId = null;
-      updateButtons();
-      redraw();
-    });
-
-    icons.append(findBtn, delBtn);
-    li.append(thumb, info, icons);
-    li.addEventListener("click", () => {
-      state.selectedId = state.selectedId === d.id ? null : d.id;
-      updateButtons();
-      redraw();
-    });
-    // Hovering a row reveals that box's full label on the image, mirroring
-    // canvas hover. redrawCanvas(), not redraw(): see redrawCanvas().
-    li.addEventListener("mouseenter", () => {
-      state.hoverBoxId = d.id;
-      redrawCanvas();
-    });
-    li.addEventListener("mouseleave", () => {
-      if (state.hoverBoxId === d.id) {
-        state.hoverBoxId = null;
-        redrawCanvas();
-      }
-    });
-    resultsEl.appendChild(li);
-  });
-}
+// The results list lives in results-list.js; bind it to the shared state, the
+// list element, and the callbacks its rows trigger, and rebind renderResultsList
+// by name (redraw() and clearSession() call it).
+const { renderResultsList } = createResultsList({
+  state,
+  resultsEl,
+  computeOverlapWarnings,
+  thumbnailDataUrl: thumbnails.thumbnailDataUrl,
+  zoomToBox,
+  updateButtons,
+  redraw,
+  redrawCanvas,
+});
 
 // The meta line stays regular text; the message half is wrapped in a
 // monospace span so it reads as a distinct system message.
@@ -781,7 +484,7 @@ fileInput.addEventListener("change", () => {
     state.rotation = 0;
     state.detections = [];
     state.selectedId = null;
-    clearThumbnailCache();
+    thumbnails.clear();
     state.lastStatusMessage = null; // new photo: don't carry over the previous one's status
     resetView();
     updateButtons();
