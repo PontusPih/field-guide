@@ -3,13 +3,12 @@
 // label, resize handles, delete-X) at the current pan/zoom, plus the zoom and
 // clamp operations that change the view.
 //
-// Extracted from ocr.js (refactor-plan.md, "The full ocr.js restructure",
-// step 12). Holds no module state: createCanvasView() binds the render/view
-// functions to the shared `state`, the canvas element and its 2D context, the
-// few drawing constants, and updateMeta() (called after a view change to
-// refresh the zoom% in the info line). It returns the entry points the rest of
-// the app calls by name; the draw* helpers stay private to the closure.
-// `state.full` is the rotated source canvas everything is painted from.
+// Holds no module state: createCanvasView() binds the render/view functions
+// to the shared `state`, the canvas element and its 2D context, the few
+// drawing constants, and updateMeta() (called after a view change to refresh
+// the zoom% in the info line). Returns the entry points the rest of the app
+// calls by name; the draw* helpers stay private to the closure. `state.full`
+// is the rotated source canvas everything is painted from.
 
 import { toSource, toDisplay, boundsOf, cornersOf } from "./geometry.js";
 import { colorFor, canvasLabelFor } from "./detections.js";

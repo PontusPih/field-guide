@@ -9,12 +9,11 @@
 //   - pinch (wheel WITH ctrlKey)       -> zoom, anchored at the cursor
 //   - Delete/Backspace                 -> remove the selected box
 //
-// Extracted from ocr.js (refactor-plan.md, "The full ocr.js restructure",
-// step 13). createInteraction() attaches its own listeners (pointer/wheel on the
-// canvas, keydown on window) and owns the drag-transient state as closure
-// privates -- nothing outside these handlers reads it, settling the deferral
-// from step 9. Everything else -- the shared state, the view operations, the
-// flush callbacks -- arrives through the params.
+// createInteraction() attaches its own listeners (pointer/wheel on the canvas,
+// keydown on window) and owns the drag-transient state as closure privates --
+// nothing outside these handlers reads it. Everything else -- the shared
+// state, the view operations, the flush callbacks -- arrives through the
+// params.
 
 import {
   toSource, toDisplay, hitTestBoxes, distance, nearestWithinRadius, pointInPolygon,

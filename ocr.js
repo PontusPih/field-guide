@@ -106,11 +106,11 @@ const TILE_OVERLAP_FRAC = 0.15;
 const TILE_SINGLE_CELL_FACTOR = 1.4;
 
 // Mutable state shared across the whole tool, gathered into one object held by
-// reference so an extracted module (see refactor-plan.md, "The full ocr.js
-// restructure") can reassign a field and have this module observe it -- which
-// an exported `let` binding cannot do, module live bindings being import-side
-// read-only. Interaction-transient state stays in the bare `let`s below: only
-// the pointer handlers touch it, so it needs no cross-module sharing yet.
+// reference so canvas-view.js, interaction.js, and scan.js can reassign a
+// field and have this module observe it -- which an exported `let` binding
+// cannot do, module live bindings being import-side read-only.
+// Interaction-transient state stays in the bare `let`s below: only the
+// pointer handlers touch it, so it needs no cross-module sharing yet.
 const state = {
   img: null,           // loaded HTMLImageElement, full source resolution
   fileName: "",        // original filename of the loaded image, shown in the info line

@@ -7,10 +7,9 @@
 // would just 503). Boxes can be added mid-scan; the worker picks them up on its
 // next iteration.
 //
-// Extracted from ocr.js (refactor-plan.md, "The full ocr.js restructure",
-// step 11). Holds no module state of its own: createScan() binds the queue and
-// worker to the shared `state` object, the render callbacks they trigger, and
-// the OCR/tiling config, and returns the three entry points ocr.js wires to
+// Holds no module state of its own: createScan() binds the queue and worker
+// to the shared `state` object, the render callbacks they trigger, and the
+// OCR/tiling config, and returns the three entry points ocr.js wires to
 // buttons. `state.full`, `document`, `fetch`, and `AbortController` are the
 // browser/globals this relies on; the rest arrives through the params.
 

@@ -7,8 +7,7 @@
 // serialises detections wholesale (session-store.js), and a data URL per box
 // would be written to IndexedDB on every save.
 //
-// Extracted from ocr.js (refactor-plan.md, "The full ocr.js restructure",
-// step 13). createThumbnailCache() binds it to the shared state and returns
+// createThumbnailCache() binds it to the shared state and returns
 // { thumbnailDataUrl, clear }; the cache Map is private. clear() is called
 // whenever the source pixels or the ids change (new photo, rotate, clear) --
 // that lifecycle, driven from outside the results list, is why this is its own

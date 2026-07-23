@@ -3,12 +3,11 @@
 // state.detections on every redraw() -- the DOM is cheap at these counts, and a
 // full rebuild keeps the list a pure function of state.
 //
-// Extracted from ocr.js (refactor-plan.md, "The full ocr.js restructure",
-// step 13). Stays DOM-imperative -- extracting the thumbnail cache stripped the
-// image work out, leaving just DOM construction and the row event wiring.
-// createResultsList() binds it to the shared state, the <ul> element, and the
-// callbacks its rows trigger (select/zoom/delete all re-render), and returns
-// { renderResultsList }; ocr.js's redraw() and clearSession() call it by name.
+// DOM-imperative: builds rows and wires their events; thumbnail image work
+// lives in thumbnails.js. createResultsList() binds it to the shared state,
+// the <ul> element, and the callbacks its rows trigger (select/zoom/delete all
+// re-render), and returns { renderResultsList }; ocr.js's redraw() and
+// clearSession() call it by name.
 
 import { colorFor, listLabelFor } from "./detections.js";
 
