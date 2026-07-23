@@ -1,6 +1,6 @@
 // The OCR scan queue and its single worker.
 //
-// A whole-photo "Run OCR" and a hand-drawn box are both just regions: each is
+// A whole-photo "OCR full photo" and a hand-drawn box are both just regions: each is
 // reduced at enqueue time to backend-sized tile crops in full-image
 // coordinates, pushed onto one queue, and drained one tile at a time by a
 // single worker (the backend's own job queue is bounded, so parallel requests
@@ -59,7 +59,7 @@ export function createScan({
 
   // Splits the (x0,y0)-(x0+w,y0+h) region of `full` into tile-sized crops in
   // full-image coordinates (PLAN.md, "Tiled scanning for large images").
-  // Shared by the whole-photo "Run OCR" button and per-drawn-box recognition;
+  // Shared by the whole-photo "OCR full photo" button and per-drawn-box recognition;
   // keeps every upload under the backend's OCR_MAX_DIMENSION limit.
   function tileBoxesFor(x0, y0, w, h) {
     if (w <= 0 || h <= 0) return [];
@@ -105,7 +105,12 @@ export function createScan({
   }
 
   function cancelScan() {
-    if (state.scanAbortController) state.scanAbortController.abort();
+    if (!state.scanAbortController) return;
+    state.scanAbortController.abort();
+    // Lets a synchronous click on "OCR full photo" right after this one
+    // re-enable it immediately, rather than waiting for the aborted drain's
+    // async teardown to null out scanAbortController.
+    updateButtons();
   }
 
   // A drawn box is a region to scan — it may hold one label or several, so

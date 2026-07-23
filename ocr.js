@@ -121,7 +121,7 @@ const state = {
   detections: [],      // [{ id, box: [[x,y]x4] in source coords, text, score }]
   nextId: 1,
 
-  // A whole-photo "Run OCR" and a drawn box are both just regions; each is
+  // A whole-photo "OCR full photo" and a drawn box are both just regions; each is
   // reduced at enqueue time to tile-sized crops in full-image coordinates,
   // drained by one worker (see ensureWorkerRunning()).
   // [{ box: [x0,y0,x1,y1], kind: "auto" | "manual", placeholderId? }]
@@ -345,11 +345,18 @@ function pruneEmpty() {
 function updateButtons() {
   const hasImage = !!state.img;
   for (const b of [rotateLeftBtn, rotateRightBtn]) b.disabled = !hasImage || !!state.scanAbortController;
-  // Both scan buttons just push onto scanQueue and (re)start the worker (see
-  // ensureWorkerRunning()), so clicking either mid-scan adds to the same
-  // queue rather than being blocked.
-  runOcrBtn.disabled = !hasImage;
+  // Disabled once a whole-photo scan is outstanding, so repeat clicks can't
+  // re-tile and re-queue the same photo. Checks signal.aborted rather than
+  // just the controller's presence so cancelScan()'s own updateButtons()
+  // call re-enables this right away, without waiting for the aborted drain's
+  // async teardown to null out scanAbortController.
+  runOcrBtn.disabled = !hasImage
+    || (!!state.scanAbortController && !state.scanAbortController.signal.aborted);
   cancelScanBtn.disabled = !state.scanAbortController;
+  // Guards against a second click overwriting the first's placeholder
+  // bookkeeping (see recognizePendingBoxes()), so this can stay enabled and
+  // just add to the shared queue rather than needing the same gating as
+  // "OCR full photo".
   recognizePendingBtn.disabled = !state.detections.some((d) => d.score == null && !d.attempted);
   pruneOverlappingBtn.disabled = computeOverlapWarnings().size === 0;
   pruneEmptyBtn.disabled = !state.detections.some((d) => d.score == null && d.attempted);
