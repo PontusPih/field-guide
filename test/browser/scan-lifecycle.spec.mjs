@@ -1,11 +1,11 @@
 // Characterization spec for cancelling a scan and resuming it: plain cancel
 // mid-drain, and the harder case step 3 of refactor-plan.md fixed -- clicking
-// Run OCR again while the cancelled drain is still tearing down must carry
+// OCR full photo again while the cancelled drain is still tearing down must carry
 // that work into the next drain, not throw it away.
 //
 // The carry-over race only reproduces if the worker is still suspended
 // awaiting a tile's response when the second click lands. All three clicks
-// (Run OCR, Cancel, Run OCR again) are therefore dispatched inside one
+// (OCR full photo, Cancel, OCR full photo again) are therefore dispatched inside one
 // Runtime.evaluate call: JS run-to-completion guarantees they all fire before
 // the event loop gets a chance to resume the suspended worker, which a
 // sequence of separate CDP round-trips could not guarantee. The stub's own
@@ -63,7 +63,7 @@ describe("scan cancel and resume", { skip: chromePath ? false : "no Chrome found
   });
 
   beforeEach(async () => {
-    // The dev default (Infinity tile size) makes one Run OCR click enqueue
+    // The dev default (Infinity tile size) makes one OCR full photo click enqueue
     // exactly one tile -- the simplest queue state to reason a race about.
     await bootApp(page, origin, {});
   });
@@ -94,21 +94,48 @@ describe("scan cancel and resume", { skip: chromePath ? false : "no Chrome found
       "rotation should be re-enabled once the scan has stopped");
   });
 
-  test("clicking Run OCR again while a cancelled scan is still tearing down carries " +
+  test("clicking OCR full photo again while a cancelled scan is still tearing down carries " +
     "the new work into the next drain, rather than discarding it", async () => {
     await stubOcrDelayed(page, 150);
     await loadSyntheticPhoto(page);
 
-    await page.evaluate(`
-      document.getElementById("runOcr").click();
-      document.getElementById("cancelScan").click();
-      document.getElementById("runOcr").click();
-      true
+    const disabledRightAfterCancel = await page.evaluate(`
+      (() => {
+        document.getElementById("runOcr").click();
+        document.getElementById("cancelScan").click();
+        const disabled = document.getElementById("runOcr").disabled;
+        document.getElementById("runOcr").click();
+        return disabled;
+      })()
     `);
+    assert.equal(disabledRightAfterCancel, false,
+      "cancelScan() must re-enable OCR full photo synchronously, without waiting for " +
+      "the aborted drain's async teardown to clear scanAbortController -- otherwise " +
+      "the third click above would be inert and this test would be exercising nothing");
 
     await scanIdle(page);
     assert.equal(await page.evaluate("window.__ocrCalls"), 2,
       "the tile enqueued during teardown should still be sent, not thrown away");
+  });
+
+  test("OCR full photo disables itself while a scan is outstanding, so repeat clicks " +
+    "can't queue duplicate whole-photo scans", async () => {
+    await stubOcrDelayed(page, 300);
+    await loadSyntheticPhoto(page);
+
+    await page.evaluate(`document.getElementById("runOcr").click(); true`);
+    await page.waitFor(`document.getElementById("runOcr").disabled`,
+      "OCR full photo to disable once its scan starts");
+
+    // A disabled button ignores click() the same as a real click -- this
+    // should be a no-op, not a second whole-photo enqueue.
+    await page.evaluate(`document.getElementById("runOcr").click(); true`);
+    await scanIdle(page);
+
+    assert.equal(await page.evaluate("window.__ocrCalls"), 1,
+      "the disabled second click must not have queued a duplicate whole-photo scan");
+    assert.equal(await page.evaluate(`document.getElementById("runOcr").disabled`), false,
+      "OCR full photo should re-enable once the scan finishes");
   });
 
   test("cancelling a manual region's scan leaves its box retryable, not stuck", async () => {
