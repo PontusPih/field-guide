@@ -52,7 +52,6 @@ const cancelScanBtn = document.getElementById("cancelScan");
 const recognizePendingBtn = document.getElementById("recognizePending");
 const pruneOverlappingBtn = document.getElementById("pruneOverlapping");
 const pruneEmptyBtn = document.getElementById("pruneEmpty");
-const deleteBtn = document.getElementById("deleteSelected");
 const clearBtn = document.getElementById("clearScan");
 const clearBoxesBtn = document.getElementById("clearBoxes");
 const goToGuideBtn = document.getElementById("goToGuide");
@@ -351,7 +350,6 @@ function updateButtons() {
   // queue rather than being blocked.
   runOcrBtn.disabled = !hasImage;
   cancelScanBtn.disabled = !state.scanAbortController;
-  deleteBtn.disabled = state.selectedId == null;
   recognizePendingBtn.disabled = !state.detections.some((d) => d.score == null && !d.attempted);
   pruneOverlappingBtn.disabled = computeOverlapWarnings().size === 0;
   pruneEmptyBtn.disabled = !state.detections.some((d) => d.score == null && d.attempted);
@@ -380,6 +378,8 @@ createInteraction({
   deleteSelected,
 });
 
+// Reachable via Delete/Backspace (interaction.js); the canvas and list delete-X
+// hotspots remove directly rather than through this.
 function deleteSelected() {
   if (state.selectedId == null) return;
   state.detections = state.detections.filter((d) => d.id !== state.selectedId);
@@ -387,7 +387,6 @@ function deleteSelected() {
   updateButtons();
   redraw();
 }
-deleteBtn.addEventListener("click", deleteSelected);
 
 pruneOverlappingBtn.addEventListener("click", () => {
   const removed = pruneOverlapping();

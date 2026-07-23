@@ -25,7 +25,11 @@ import {
 } from "./fixtures.mjs";
 
 const near = (a, b, tol = 2) => Math.abs(a - b) <= tol;
-const isSelected = (page) => page.evaluate(`!document.getElementById("deleteSelected").disabled`);
+// The results list bolds its row for the selected detection (results-list.js);
+// that's the DOM-observable proxy for selection state.
+const isSelected = (page) => page.evaluate(
+  `document.querySelector("#results li")?.style.fontWeight === "bold"`,
+);
 
 const chromePath = await findChrome();
 

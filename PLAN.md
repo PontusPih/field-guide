@@ -501,6 +501,18 @@ would hit the ~700MB ceiling directly. Implemented (`ocr.js`, `tiling.js`,
       worth a deliberate pass over the whole palette — and general legibility of position
       (overlapping outlines, label placement) — rather than colors and states having
       accreted one at a time as features landed. Not yet designed in detail.
+- [ ] **Hover/selection UX pass on canvas <-> list linkage.** Four related fixes:
+      1. Hovering a box on the canvas should highlight its row in the results list — today
+         only the reverse direction exists: list-row hover reveals the full label on canvas
+         (`hoverBoxId`/`showFullLabel`, canvas-view.js).
+      2. The canvas delete-X (`deleteHotspotDisplayPos`, canvas-view.js) floats above the
+         box's top-center; move it to the top-left instead.
+      3. List-row hover should change the box's canvas color/outline, not swap in the full
+         text label — the label reveal should stay tied to selection only.
+      4. The selected row's list highlight (`li.style.fontWeight = "bold"`, results-list.js)
+         is too subtle to spot at a glance; make it clearly distinct (e.g. a background tint
+         or border, not just font-weight).
+      Not yet designed in detail.
 
 **Benchmarks**
 Raw data behind the design above, kept for reference. All measured on this dev
