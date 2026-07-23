@@ -4,14 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Scan — field guide — pdp8.se</title>
+<link rel="stylesheet" href="style.css">
 <style>
-  :root { color-scheme: light dark; }
-  body { font-family: system-ui, sans-serif; margin: 1.5rem auto; max-width: 80rem; padding: 0 1rem; }
-  .nav { display: flex; justify-content: space-between; align-items: baseline;
-         margin-bottom: 0.5rem; }
-  .back, .forward { font-size: 0.9rem; color: #666; text-decoration: none; }
-  .back:hover, .forward:hover { text-decoration: underline; }
-  h1 { margin-bottom: 0.2rem; }
+  body { margin: 1.5rem auto; max-width: 80rem; }
   #controls { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
   #goToGuide { margin-left: auto; }
   #status { color: #555; margin-top: 0.5rem; min-height: 1.2em; white-space: pre-line; }
@@ -49,7 +44,6 @@
   .icon-btn:hover { background: #eee; }
 
   @media (prefers-color-scheme: dark) {
-    .back, .forward { color: #aaa; }
     #cheatsheet { background: #1e1e1e; border-color: #444; }
     #resultsPanel { border-color: #444; }
     .result-row { border-color: #333; }

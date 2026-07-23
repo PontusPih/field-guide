@@ -13,6 +13,8 @@
 import { toSource, toDisplay, boundsOf, cornersOf } from "./geometry.js";
 import { colorFor, canvasLabelFor } from "./detections.js";
 
+const SELECTED_COLOR = "#3498db";
+
 export function createCanvasView({
   state,
   ctx,
@@ -109,13 +111,13 @@ export function createCanvasView({
     strokeBoxPath(detection.box);
     ctx.setLineDash(isPending ? [6, 4] : []);
     ctx.lineWidth = isSelected ? 4 : 2;
-    ctx.strokeStyle = isSelected ? "#3498db" : color;
+    ctx.strokeStyle = isSelected ? SELECTED_COLOR : color;
     ctx.stroke();
     ctx.setLineDash([]);
 
     const topLeft = toDisplay({ x: detection.box[0][0], y: detection.box[0][1] }, state.view);
     if (showFullLabel) {
-      drawLabelText(canvasLabelFor(detection), isSelected ? "#3498db" : color, topLeft);
+      drawLabelText(canvasLabelFor(detection), isSelected ? SELECTED_COLOR : color, topLeft);
     } else {
       drawLabelText(String(index + 1), color, topLeft);
     }
@@ -148,7 +150,7 @@ export function createCanvasView({
     for (const corner of cornersOf(bounds)) {
       const p = toDisplay(corner, state.view);
       ctx.fillStyle = "#fff";
-      ctx.strokeStyle = "#3498db";
+      ctx.strokeStyle = SELECTED_COLOR;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.rect(
@@ -218,7 +220,7 @@ export function createCanvasView({
       const p1 = toDisplay({ x: state.draftBox.x1, y: state.draftBox.y1 }, state.view);
       ctx.setLineDash([6, 4]);
       ctx.lineWidth = 2;
-      ctx.strokeStyle = "#3498db";
+      ctx.strokeStyle = SELECTED_COLOR;
       ctx.strokeRect(p0.x, p0.y, p1.x - p0.x, p1.y - p0.y);
       ctx.setLineDash([]);
     }

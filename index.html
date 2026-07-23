@@ -4,12 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Field guide — pdp8.se</title>
+  <link rel="stylesheet" href="style.css">
   <style>
-    :root { color-scheme: light dark; }
-    body { font-family: system-ui, sans-serif; max-width: 60rem; margin: 3rem auto;
-           padding: 0 1rem; line-height: 1.5; }
-    h1 { margin-bottom: 0.2rem; }
-    .lede { margin-top: 0; color: #666; }
+    body { max-width: 60rem; margin: 3rem auto; line-height: 1.5; }
 
     .workflow { display: flex; align-items: stretch; gap: 1.25rem; margin-top: 2rem;
                 flex-wrap: wrap; }
@@ -25,7 +22,7 @@
     @media (max-width: 36rem) { .arrow { transform: rotate(90deg); } }
 
     @media (prefers-color-scheme: dark) {
-      .lede, .box p { color: #aaa; }
+      .box p { color: #aaa; }
       .box { border-color: #444; }
       .box:hover { border-color: #888; background: rgba(255, 255, 255, 0.04); }
       .arrow { color: #ccc; }

@@ -1,0 +1,18 @@
+/* Shared page chrome: nav links, lede paragraph, base body/heading. Each page's
+   own <style> block holds its layout and components. */
+
+:root { color-scheme: light dark; }
+
+body { font-family: system-ui, sans-serif; padding: 0 1rem; }
+h1 { margin-bottom: 0.2rem; }
+.lede { margin-top: 0; color: #666; }
+
+.nav { display: flex; justify-content: space-between; align-items: baseline;
+       margin-bottom: 0.5rem; }
+.back, .forward { font-size: 0.9rem; color: #666; text-decoration: none; }
+.back:hover, .forward:hover { text-decoration: underline; }
+
+@media (prefers-color-scheme: dark) {
+  .lede { color: #aaa; }
+  .back, .forward { color: #aaa; }
+}
