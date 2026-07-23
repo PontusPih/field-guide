@@ -29,7 +29,7 @@
   }
   #resultsHeader { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
   #resultsHeader h2 { margin: 0; font-size: 1rem; }
-  #clearBoxes { font-size: 0.8rem; padding: 0.15rem 0.5rem; }
+  #resultsHeaderActions { display: flex; gap: 0.3rem; }
   #results { list-style: none; margin: 0; padding: 0; font-family: var(--mono); font-size: 0.85rem; }
   .result-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0; border-bottom: 1px solid #eee; }
   .result-thumb { max-height: 36px; max-width: 90px; border: 1px solid #ccc; background: #fff; flex-shrink: 0; }
@@ -39,7 +39,7 @@
   .result-icons { margin-left: auto; display: flex; gap: 0.35rem; flex-shrink: 0; }
   .icon-btn {
     border: 1px solid #ccc; background: #fff; border-radius: 4px; cursor: pointer;
-    font-size: 0.85rem; line-height: 1; padding: 0.15rem 0.4rem;
+    font-size: 0.85rem; line-height: 1; padding: 0.3rem 0.6rem;
   }
   .icon-btn:hover { background: #eee; }
 
@@ -70,8 +70,6 @@
     <button id="runOcr" disabled>Run OCR</button>
     <button id="cancelScan" disabled>Cancel scan</button>
     <button id="recognizePending" disabled>Recognize new boxes</button>
-    <button id="pruneOverlapping" disabled>Prune overlapping</button>
-    <button id="pruneEmpty" disabled>Prune empty</button>
     <button id="deleteSelected" disabled>Delete selected</button>
     <button id="clearScan" disabled>Clear</button>
     <button id="goToGuide" disabled>Handoff to identify</button>
@@ -91,6 +89,7 @@
       <tr><td>Hover near a box (or select it), click the &times; floating above it</td><td>Delete that box immediately</td></tr>
       <tr><td>Click a result in the list</td><td>Select/deselect its box</td></tr>
       <tr><td>&#128269; / &times; next to a list row</td><td>Pan/zoom to that box / delete it directly</td></tr>
+      <tr><td>&#10697; / &#8709; / &#128465; above the list</td><td>Prune overlapping boxes / prune empty boxes / clear all boxes (keeps the photo)</td></tr>
     </table>
   </details>
   <div id="status"></div>
@@ -99,7 +98,11 @@
     <div id="resultsPanel">
       <div id="resultsHeader">
         <h2>Boxes</h2>
-        <button id="clearBoxes" disabled>Clear boxes</button>
+        <div id="resultsHeaderActions">
+          <button id="pruneOverlapping" class="icon-btn" disabled title="Prune overlapping boxes">&#10697;</button>
+          <button id="pruneEmpty" class="icon-btn" disabled title="Prune empty boxes (tried, found nothing)">&#8709;</button>
+          <button id="clearBoxes" class="icon-btn" disabled title="Clear all boxes (keeps the loaded photo)">&#128465;</button>
+        </div>
       </div>
       <ul id="results"></ul>
     </div>

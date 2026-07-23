@@ -476,12 +476,13 @@ would hit the ~700MB ceiling directly. Implemented (`ocr.js`, `tiling.js`,
       position) would make it easier to spot and compare them before pruning. Not yet
       designed in detail (worth deciding against the closeness-grouping idea vs. a
       simpler fixed sort key first).
-- [ ] **Move "Prune overlapping" and "Prune empty" next to "Clear boxes."** Both act on
-      the results list the same way "Clear boxes" does, so they belong in
-      `#resultsHeader` (ocr.html) alongside it rather than in the top `#controls` row.
-      Three buttons side by side there is tight — needs shorter labels and/or icons
-      (e.g. an overlap glyph, an empty-box glyph) to keep the header compact
-      horizontally. Not yet designed in detail (wording/iconography undecided).
+- [x] **Moved "Prune overlapping" and "Prune empty" next to "Clear boxes."** All three
+      now live in `#resultsHeader` (ocr.html) as icon-only `.icon-btn` buttons — the
+      same pattern already used for find/delete in the results list rows — each with a
+      `title` tooltip carrying the full description: &#10697; prune overlapping,
+      &#8709; prune empty, &#128465; clear boxes. Documented in the cheatsheet
+      alongside the list-row icon row. Keeps the header compact at the panel's 280px
+      width without shortening any text.
 - [ ] **Invalidate and re-scan every box.** One action that resets all existing boxes to
       pending — clearing `text`, `score`, and `attempted` — and enqueues them for
       recognition again, without redrawing them by hand. Wanted when a first pass read
