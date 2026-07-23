@@ -9,28 +9,28 @@
   body { margin: 1.5rem auto; max-width: 80rem; }
   #controls { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
   #goToGuide { margin-left: auto; }
-  #status { color: #555; margin-top: 0.5rem; min-height: 1.2em; white-space: pre-line; }
-  #status .status-msg { font-family: ui-monospace, monospace; font-size: 0.9rem; }
+  #status { color: var(--muted-text); margin-top: 0.5rem; min-height: 1.2em; white-space: pre-line; }
+  #status .status-msg { font-family: var(--mono); font-size: 0.9rem; }
   #cheatsheet {
-    border: 1px solid #ccc; border-radius: 6px; padding: 0.75rem 1rem;
-    background: #f7f7f7; font-size: 0.9rem; margin-top: 1rem;
+    border: 1px solid #ccc; border-radius: var(--panel-radius); padding: 0.75rem 1rem;
+    background: var(--panel-bg); font-size: 0.9rem; margin-top: 1rem;
   }
   #cheatsheet summary { cursor: pointer; font-weight: bold; }
   #cheatsheet table { margin-top: 0.5rem; border-collapse: collapse; }
   #cheatsheet td { padding: 0.15rem 0.6rem 0.15rem 0; vertical-align: top; }
-  #cheatsheet td:first-child { font-family: monospace; white-space: nowrap; color: #234; }
+  #cheatsheet td:first-child { font-family: var(--mono); white-space: nowrap; color: #234; }
 
   #workspace { display: flex; gap: 1rem; align-items: flex-start; margin-top: 1rem; }
   #stage { max-width: 100%; height: auto; border: 1px solid #999; display: block; touch-action: none; flex: 1 1 auto; min-width: 0; }
 
   #resultsPanel {
     flex: 0 0 280px; width: 280px; max-height: 650px; overflow-y: auto;
-    border: 1px solid #ccc; border-radius: 6px; padding: 0.5rem;
+    border: 1px solid #ccc; border-radius: var(--panel-radius); padding: 0.5rem;
   }
   #resultsHeader { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
   #resultsHeader h2 { margin: 0; font-size: 1rem; }
   #clearBoxes { font-size: 0.8rem; padding: 0.15rem 0.5rem; }
-  #results { list-style: none; margin: 0; padding: 0; font-family: monospace; font-size: 0.85rem; }
+  #results { list-style: none; margin: 0; padding: 0; font-family: var(--mono); font-size: 0.85rem; }
   .result-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0; border-bottom: 1px solid #eee; }
   .result-thumb { max-height: 36px; max-width: 90px; border: 1px solid #ccc; background: #fff; flex-shrink: 0; }
   .result-info { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
@@ -44,7 +44,7 @@
   .icon-btn:hover { background: #eee; }
 
   @media (prefers-color-scheme: dark) {
-    #cheatsheet { background: #1e1e1e; border-color: #444; }
+    #cheatsheet { border-color: #444; }
     #resultsPanel { border-color: #444; }
     .result-row { border-color: #333; }
     .icon-btn { background: #262626; border-color: #444; color: #ddd; }

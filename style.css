@@ -1,18 +1,28 @@
-/* Shared page chrome: nav links, lede paragraph, base body/heading. Each page's
-   own <style> block holds its layout and components. */
+/* Shared page chrome and design tokens. Each page's own <style> block holds
+   its layout and components, but points back at these tokens rather than
+   redefining them. */
 
-:root { color-scheme: light dark; }
+:root {
+  color-scheme: light dark;
+  --muted-text: #666;
+  --panel-bg: #f5f5f5;
+  --panel-radius: 8px;
+  --mono: ui-monospace, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --muted-text: #aaa;
+    --panel-bg: #1e1e1e;
+  }
+}
 
 body { font-family: system-ui, sans-serif; padding: 0 1rem; }
 h1 { margin-bottom: 0.2rem; }
-.lede { margin-top: 0; color: #666; }
+.lede { margin-top: 0; color: var(--muted-text); }
 
 .nav { display: flex; justify-content: space-between; align-items: baseline;
        margin-bottom: 0.5rem; }
-.back, .forward { font-size: 0.9rem; color: #666; text-decoration: none; }
+.back, .forward { font-size: 0.9rem; color: var(--muted-text); text-decoration: none; }
 .back:hover, .forward:hover { text-decoration: underline; }
 
-@media (prefers-color-scheme: dark) {
-  .lede { color: #aaa; }
-  .back, .forward { color: #aaa; }
-}
+button { font-size: 1rem; padding: 0.5rem 1rem; cursor: pointer; }
