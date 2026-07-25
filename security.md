@@ -133,6 +133,13 @@ the primary control for that is keeping the pinned native dependencies **patched
 the RCE happening at all) plus **egress restriction** where the platform allows it.
 Read-only root filesystem and dropped capabilities are further defense-in-depth.
 
+*Progress:* dependencies were reviewed and moved to latest stable, including migrating off
+the now-EOL `rapidocr-onnxruntime` (frozen 2025-01) to the maintained `rapidocr` 3.x — so
+the native stack is current and back under active upstream maintenance. The image now
+**pre-downloads OCR models at build time** (`rapidocr` 3.x otherwise fetches them at
+runtime), which removes the last runtime outbound dependency and makes **egress lockdown at
+the platform actually viable** — it is now the main remaining control worth applying.
+
 ### LOW/INFO — open CORS [fixed]
 
 `Access-Control-Allow-Origin: *` let any web page drive the backend from its visitors'

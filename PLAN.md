@@ -256,15 +256,31 @@ Planned, not started.
       `server.py` loads the RapidOCR models before the HTTP server starts listening,
       so any successful response already implies models are warm. Only relevant if
       hosting ends up on a sleep-tier PaaS — moot under self-hosting.
-- [ ] Revisit the `rapidocr-onnxruntime==1.4.4` pin later. That package line has been
-      unmaintained since Jan 2025 — the project consolidated into a unified `rapidocr`
-      package (multi-backend, at 3.9.1 as of Jul 2026) that superseded it. Not migrating
-      now: verified memory profiling (peak RSS ~545MB per request, dominated by pipeline
-      buffer copies at RapidOCR's own ~2000px working resolution, not by original image
-      size — see the memory-ceiling finding under Deployment) is unlikely to improve
-      much from a backend swap alone, and the 2.x/3.x line looks like a real rewrite
-      (yanked releases for missing deps / a broken PyTorch engine), not a drop-in bump —
-      would need the full accuracy + memory verification redone.
+- [x] Migrated off the EOL `rapidocr-onnxruntime==1.4.4` to the maintained unified
+      `rapidocr` package (3.9.2, Jul 2026). `server.py` moved to the 3.x API (`params`
+      config dict instead of constructor kwargs; results as a `RapidOCROutput` with
+      parallel `boxes`/`txts`/`scores` instead of the 1.x `(list, elapse)` tuple), and
+      the other deps went to latest stable (`onnxruntime` 1.28.0, `tqdm` 4.69.1, plus
+      rapidocr's new runtime deps `omegaconf`/`requests`/`colorlog` pinned in
+      `requirements.txt`). The key behavioural change: `rapidocr` 3.x downloads models on
+      demand rather than bundling them, so the `Dockerfile` now **pre-downloads them at
+      build time** into `/app/models` (`OCR_MODEL_ROOT_DIR`) — keeping the running
+      container offline for model fetches and enabling the egress lockdown in
+      `security.md`. **Needs on-box validation** (not run here): reinstall, run the
+      regression suite, and re-baseline `test_server.py`'s expected scores if the newer
+      models shifted them; then rebuild the image to confirm the model bake lands in a
+      runtime-readable path. The earlier memory-profiling caveat (peak RSS ~545MB,
+      dominated by pipeline buffer copies at RapidOCR's ~2000px working resolution) still
+      applies and should be re-measured on 3.x.
+      **Model choice benchmarked and pinned (`eval_models.py`):** rapidocr 3.x's own
+      default (PP-OCRv6 "small") both misread the sample labels (`M8295` → `M2295`) and ran
+      heavier; a sweep across v4/v5/v6 × tiers found **PP-OCRv4 "mobile"** the only variant
+      reading every sample label correctly while staying fast (~2s) and under the memory
+      ceiling (~760MB peak on a full image, far less per tile). It is the same family the
+      retired 1.4.4 used, so accuracy/memory match the pre-migration baseline. Pinned as the
+      `server.py` default (`OCR_DET_VERSION`/`OCR_REC_VERSION`=PP-OCRv4,
+      `OCR_DET_MODEL_TYPE`/`OCR_REC_MODEL_TYPE`=mobile), overridable via env; the regression
+      suite re-baselined against it, 18/18 green.
 
 **Deployment**
 - [x] Docker image — built, passes the regression suite inside the container, and has

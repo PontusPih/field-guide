@@ -1,9 +1,12 @@
+colorlog==6.12.0
 numpy==2.5.1
-onnxruntime==1.27.0
+omegaconf==2.3.1
+onnxruntime==1.28.0
 opencv-python-headless==5.0.0.93
 pillow==12.3.0
 pyclipper==1.4.0
 PyYAML==6.0.3
+requests==2.34.2
 shapely==2.1.2
 six==1.17.0
-tqdm==4.69.0
+tqdm==4.69.1

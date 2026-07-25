@@ -86,7 +86,7 @@ matches how this project's own dev environment is set up.
 ```
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/pip install --no-deps rapidocr-onnxruntime==1.4.4
+.venv/bin/pip install --no-deps rapidocr==3.9.2
 OCR_MAX_DIMENSION=0 .venv/bin/python3 server.py
 ```
 
@@ -98,23 +98,51 @@ from other Python projects on the machine.
 
 ```
 pip install -r requirements.txt
-pip install --no-deps rapidocr-onnxruntime==1.4.4
+pip install --no-deps rapidocr==3.9.2
 OCR_MAX_DIMENSION=0 python3 server.py
 ```
 
-## Why `rapidocr-onnxruntime` is a separate install step
+## Why `rapidocr` is a separate install step
 
-In all three options above, `rapidocr-onnxruntime` is installed on its own
-with `--no-deps`, after everything in `requirements.txt`. Left to its own
-dependency list, it pulls in `opencv-python` — the full GUI build, which
-drags in X11/Qt libraries this headless server never touches.
-`requirements.txt` installs `opencv-python-headless` instead; `--no-deps`
-stops pip from then reaching for the GUI build anyway.
+In all three options above, `rapidocr` is installed on its own with `--no-deps`,
+after everything in `requirements.txt`. Left to its own dependency list, it
+pulls in `opencv-python` — the full GUI build, which drags in X11/Qt libraries
+this headless server never touches. `requirements.txt` installs
+`opencv-python-headless` instead (and pins rapidocr's other runtime deps —
+`omegaconf`, `requests`, `colorlog`, …); `--no-deps` stops pip from then
+reaching for the GUI build anyway.
+
+## Models: bundled vs. downloaded
+
+`rapidocr` 3.x does **not** bundle its ONNX models — it downloads them on first
+use (into its package dir by default, or `OCR_MODEL_ROOT_DIR` if set). Two
+consequences:
+
+- **Local dev (venv / global):** the first OCR call after install fetches the
+  default models over the network — a one-time download, cached thereafter.
+- **Docker:** the image pre-downloads the models at build time into
+  `/app/models` (`OCR_MODEL_ROOT_DIR`), so the running container needs no
+  outbound network to fetch them and cold starts don't pay a download. This is
+  what lets egress be locked down at the platform (see `../security.md`).
+
+### Which models (pinned)
+
+`server.py` pins **PP-OCRv4 "mobile"** for detection and recognition (the
+`OCR_DET_VERSION` / `OCR_REC_VERSION` / `OCR_DET_MODEL_TYPE` / `OCR_REC_MODEL_TYPE`
+defaults), not rapidocr 3.x's own PP-OCRv6 "small" default. On this app's small
+board-label digits, v6 misread labels (`M8295` → `M2295`) and cost far more
+memory; a sweep (`eval_models.py`) found v4-mobile the only variant reading every
+sample label correctly while staying fast and under the memory ceiling — and it
+matches the models the retired `rapidocr-onnxruntime` used, so accuracy is
+unchanged from before the migration. **End users get this automatically** — it's
+the code default, so the venv first-run download and the Docker build-time bake
+both fetch exactly these pinned models. To re-benchmark, run
+`eval_models.py <combo>` and override the env knobs.
 
 ## Tests
 
 ```
 pip install -r requirements.txt          # or the venv equivalent above
-pip install --no-deps rapidocr-onnxruntime==1.4.4
+pip install --no-deps rapidocr==3.9.2
 python -m unittest discover -s test -v
 ```

@@ -26,7 +26,10 @@ from urllib.parse import urlparse
 
 import cv2
 from PIL import Image
-from rapidocr_onnxruntime import RapidOCR
+from rapidocr import RapidOCR
+# The params-batch API validates model_type/ocr_version as Enum instances, not
+# strings; their .value is the human string, so ModelType("tiny") round-trips.
+from rapidocr.utils.typings import ModelType, OCRVersion
 
 VERSION = "0.1.0"
 # Render sets RENDER_GIT_COMMIT itself (build time and runtime), no Dockerfile
@@ -106,13 +109,40 @@ def is_localhost_origin(origin):
     except ValueError:
         return False
 
-# -1 matches RapidOCR/onnxruntime's own "unset, auto-detect" sentinel, so
-# these are safe to pass through unconditionally. Auto-detect is unreliable
-# in a container (os.cpu_count() sees the host's full core count, not any
-# cgroup limit), so a real deployment should pin these explicitly to match
-# the host it's actually running on.
+# -1 matches RapidOCR/onnxruntime's own "unset, auto-detect" sentinel; a value
+# other than -1 is passed through to the engine (see build_engine()). Auto-detect
+# is unreliable in a container (os.cpu_count() sees the host's full core count,
+# not any cgroup limit), so a real deployment should pin these explicitly to
+# match the host it's actually running on.
 INTRA_OP_THREADS = int(os.environ.get("OCR_INTRA_OP_THREADS", -1))
 INTER_OP_THREADS = int(os.environ.get("OCR_INTER_OP_THREADS", -1))
+
+# Where RapidOCR 3.x reads/writes its model files (config key Global.model_root_dir).
+# rapidocr 3.x downloads models on demand rather than bundling them; the Docker
+# image pre-downloads them into this dir at build time and points here at
+# runtime, so the running container needs no network to fetch models (see
+# Dockerfile). Empty = use rapidocr's own default location (a local dev run just
+# downloads to the package dir on first use).
+MODEL_ROOT_DIR = os.environ.get("OCR_MODEL_ROOT_DIR", "")
+
+# Model selection (RapidOCR 3.x config keys). Pinned to PP-OCRv4 "mobile" for
+# det and rec -- rapidocr's own 3.x default is PP-OCRv6 "small", which on this
+# app's small stylized board-label digits was both less accurate (misread
+# M8295 as M2295) and heavier than v4; the eval_models.py sweep found v4-mobile
+# the only combo reading every sample label correctly while staying fast and
+# under the memory ceiling. It is also the same model family the retired
+# rapidocr-onnxruntime 1.4.4 used, so this migration keeps the proven accuracy.
+# Overridable via env to re-benchmark; model_type vocab depends on the version
+# (PP-OCRv6: tiny/small/medium, PP-OCRv4/v5: mobile/server). The Docker bake and
+# this runtime read the same env, so the baked models match what runs.
+DET_MODEL_TYPE = os.environ.get("OCR_DET_MODEL_TYPE", "mobile")
+REC_MODEL_TYPE = os.environ.get("OCR_REC_MODEL_TYPE", "mobile")
+DET_OCR_VERSION = os.environ.get("OCR_DET_VERSION", "PP-OCRv4")
+REC_OCR_VERSION = os.environ.get("OCR_REC_VERSION", "PP-OCRv4")
+# Text-line orientation classifier. Board labels are rarely rotated 180°, so
+# disabling it (OCR_USE_CLS=0) drops a model and a pipeline stage -- a
+# memory/latency win worth measuring against any accuracy cost.
+CLS_DISABLED = os.environ.get("OCR_USE_CLS", "").strip().lower() in ("0", "false", "no", "off")
 
 # OpenCV has its own internal thread pool, separate from onnxruntime's and
 # not affected by the two settings above. -1 leaves OpenCV's own default
@@ -156,13 +186,16 @@ def run_ocr(engine, image_bytes):
     RapidOCR found them. Empty list if no text was detected.
     """
     mem_before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    result, _elapse = engine(image_bytes)
+    result = engine(image_bytes, use_cls=False) if CLS_DISABLED else engine(image_bytes)
     mem_after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     print(
         f"[{threading.current_thread().name}] OCR: {len(image_bytes)} bytes in, "
         f"peak RSS {mem_before / 1024:.0f}MB -> {mem_after / 1024:.0f}MB"
     )
-    if result is None:
+    # RapidOCR 3.x returns a RapidOCROutput with parallel boxes/txts/scores
+    # (all None when nothing was detected), rather than 1.x's (list, elapse)
+    # tuple of [box, text, score] rows.
+    if result.boxes is None:
         return []
     return [
         {
@@ -170,14 +203,34 @@ def run_ocr(engine, image_bytes):
             "text": text,
             "score": float(score),
         }
-        for box, text, score in result
+        for box, text, score in zip(result.boxes, result.txts, result.scores)
     ]
 
 
+def build_engine():
+    # RapidOCR 3.x is configured through a params dict of dotted config keys,
+    # not constructor kwargs. Only non-default values are passed, so the plain
+    # RapidOCR() default path is used unless something is explicitly pinned.
+    params = {}
+    if MODEL_ROOT_DIR:
+        params["Global.model_root_dir"] = MODEL_ROOT_DIR
+    if INTRA_OP_THREADS != -1:
+        params["EngineConfig.onnxruntime.intra_op_num_threads"] = INTRA_OP_THREADS
+    if INTER_OP_THREADS != -1:
+        params["EngineConfig.onnxruntime.inter_op_num_threads"] = INTER_OP_THREADS
+    if DET_OCR_VERSION:
+        params["Det.ocr_version"] = OCRVersion(DET_OCR_VERSION)
+    if REC_OCR_VERSION:
+        params["Rec.ocr_version"] = OCRVersion(REC_OCR_VERSION)
+    if DET_MODEL_TYPE:
+        params["Det.model_type"] = ModelType(DET_MODEL_TYPE)
+    if REC_MODEL_TYPE:
+        params["Rec.model_type"] = ModelType(REC_MODEL_TYPE)
+    return RapidOCR(params=params) if params else RapidOCR()
+
+
 def ocr_worker():
-    engine = RapidOCR(
-        intra_op_num_threads=INTRA_OP_THREADS, inter_op_num_threads=INTER_OP_THREADS
-    )
+    engine = build_engine()
     while True:
         image_bytes, result_queue = job_queue.get()
         try:
@@ -348,7 +401,7 @@ def main():
         f"({NUM_WORKERS} OCR worker(s), max_dimension={MAX_DIMENSION}px, "
         f"max_upload={MAX_UPLOAD_BYTES}B, socket_timeout={SOCKET_TIMEOUT}s, "
         f"intra_op={INTRA_OP_THREADS}, inter_op={INTER_OP_THREADS}, "
-        f"cv2_threads={CV2_THREADS})\n"
+        f"cv2_threads={CV2_THREADS}, model_root_dir={MODEL_ROOT_DIR or '(default)'})\n"
         f"  CORS allowed origins: {origins}"
     )
     server.serve_forever()

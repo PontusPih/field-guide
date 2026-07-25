@@ -19,10 +19,9 @@ from threading import Thread
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from rapidocr_onnxruntime import RapidOCR  # noqa: E402
 
 import server  # noqa: E402
-from server import Handler, check_dimensions, run_ocr, start_workers  # noqa: E402
+from server import Handler, build_engine, check_dimensions, run_ocr, start_workers  # noqa: E402
 
 FIELD_GUIDE_DIR = Path(__file__).resolve().parent.parent.parent
 IMG_1527 = FIELD_GUIDE_DIR / "IMG_1527.jpg"
@@ -72,8 +71,10 @@ class RunOcrTests(unittest.TestCase):
     def setUpClass(cls):
         # run_ocr() takes an engine explicitly (each queue worker owns its
         # own in server.py); tests share one instance rather than reloading
-        # models per test.
-        cls.engine = RapidOCR()
+        # models per test. build_engine() applies the pinned model selection
+        # (PP-OCRv4 mobile), so these assertions track the deployed config, not
+        # rapidocr's raw default.
+        cls.engine = build_engine()
 
     def test_img1527_reads_printed_label(self):
         detections = run_ocr(self.engine, IMG_1527.read_bytes())
