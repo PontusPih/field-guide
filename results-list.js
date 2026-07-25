@@ -36,7 +36,7 @@ export function createResultsList({
     input.value = d.text || "";
     label.replaceWith(input);
     input.focus();
-    input.select();
+    input.setSelectionRange(input.value.length, input.value.length); // caret at the end, nothing selected
 
     let settled = false;
     const commit = () => {

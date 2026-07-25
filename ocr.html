@@ -42,8 +42,15 @@
   .result-status { flex-shrink: 0; }
   .result-label { overflow-wrap: break-word; cursor: text; }
   /* The inline label editor fills the row between the status glyph and the
-     delete button; min-width:0 lets it shrink instead of pushing the button out. */
-  .label-edit { flex: 1 1 auto; min-width: 0; box-sizing: border-box; font: inherit; }
+     delete button; min-width:0 lets it shrink instead of pushing the button
+     out. No border/padding so it occupies the same height as the text label it
+     replaces -- otherwise the row (and its overlap-warning line) jumps when the
+     editor opens. Native background/text colour and the focus ring (it opens
+     focused) mark edit mode; no colour overrides. */
+  .label-edit {
+    flex: 1 1 auto; min-width: 0; box-sizing: border-box;
+    font: inherit; padding: 0; border: 0; margin: 0;
+  }
   .overlap-warning { font-size: 0.75rem; color: #e67e22; }
   .result-icons { margin-left: auto; display: flex; gap: 0.35rem; flex-shrink: 0; }
   .icon-btn {
