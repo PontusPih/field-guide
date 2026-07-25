@@ -55,6 +55,27 @@ OCR_QUEUE_MAXSIZE = int(os.environ.get("OCR_QUEUE_MAXSIZE", 2))
 # own tile size is also raised (see backend/README.md).
 MAX_DIMENSION = int(os.environ.get("OCR_MAX_DIMENSION", 1200))
 
+# Hard ceiling on the request body size, enforced from the client-declared
+# Content-Length *before* a single byte is read into memory. This is the
+# backstop that keeps a hostile or malformed upload from being buffered in
+# full on a memory-constrained instance (Render's 512MB free tier): a client
+# is free to declare a multi-gigabyte Content-Length, and self.rfile.read()
+# would otherwise allocate all of it before check_dimensions() -- which only
+# inspects pixel dimensions, and only post-read -- ever runs. Sized well above
+# a legitimate ~MAX_DIMENSION tile (a few hundred KB) but far below anything
+# that threatens the heap. OCR_MAX_UPLOAD_BYTES=0 (or any non-positive value)
+# disables the check, the same explicit local opt-out as OCR_MAX_DIMENSION --
+# a dev machine sending large untiled images raises or disables both.
+MAX_UPLOAD_BYTES = int(os.environ.get("OCR_MAX_UPLOAD_BYTES", 10 * 1024 * 1024))
+
+# Per-connection socket timeout, in seconds. http.server leaves this None,
+# which lets a client hold a worker thread open indefinitely by dribbling its
+# headers or body one byte at a time (slowloris); ThreadingHTTPServer caps
+# neither the thread count nor a connection's lifetime on its own, so a handful
+# of stalled connections exhaust threads at near-zero cost. A finite timeout
+# drops a connection that goes idle mid-request instead of pinning a thread.
+SOCKET_TIMEOUT = int(os.environ.get("OCR_SOCKET_TIMEOUT", 30))
+
 # -1 matches RapidOCR/onnxruntime's own "unset, auto-detect" sentinel, so
 # these are safe to pass through unconditionally. Auto-detect is unreliable
 # in a container (os.cpu_count() sees the host's full core count, not any
@@ -160,6 +181,10 @@ def start_workers(n):
 
 
 class Handler(BaseHTTPRequestHandler):
+    # Applied to the connection socket by socketserver.StreamRequestHandler;
+    # None (http.server's default) means "never time out" -- see SOCKET_TIMEOUT.
+    timeout = SOCKET_TIMEOUT
+
     def send_text(self, status, body):
         body = body.encode("utf-8")
         self.send_response(status)
@@ -212,9 +237,23 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404, "Not found")
             return
 
-        length = int(self.headers.get("Content-Length", 0))
+        # Parsed before reading, and the body size gated on it, so an oversized
+        # or malformed upload is rejected without ever being buffered. A body
+        # that lies (fewer bytes than declared) is bounded by the socket
+        # timeout above, not by this length.
+        length_header = self.headers.get("Content-Length")
+        try:
+            length = int(length_header) if length_header is not None else 0
+        except ValueError:
+            self.send_json_error(400, "invalid Content-Length header")
+            return
         if length == 0:
-            self.send_error(400, "Empty body")
+            self.send_json_error(400, "empty body")
+            return
+        if MAX_UPLOAD_BYTES > 0 and length > MAX_UPLOAD_BYTES:
+            self.send_json_error(
+                413, f"body of {length} bytes exceeds the {MAX_UPLOAD_BYTES}-byte upload limit"
+            )
             return
         image_bytes = self.rfile.read(length)
 
@@ -251,6 +290,7 @@ def main():
     print(
         f"OCR backend v{VERSION} ({COMMIT_SHA}) on http://0.0.0.0:{PORT} "
         f"({NUM_WORKERS} OCR worker(s), max_dimension={MAX_DIMENSION}px, "
+        f"max_upload={MAX_UPLOAD_BYTES}B, socket_timeout={SOCKET_TIMEOUT}s, "
         f"intra_op={INTRA_OP_THREADS}, inter_op={INTER_OP_THREADS}, "
         f"cv2_threads={CV2_THREADS})"
     )

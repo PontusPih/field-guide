@@ -28,5 +28,16 @@ COPY server.py ./
 ARG GIT_COMMIT=unknown
 ENV GIT_COMMIT=$GIT_COMMIT
 
+# Drop root for the running service. A crafted-image RCE in a native decoder
+# (libjpeg / OpenCV / Pillow / onnxruntime) then executes as an unprivileged
+# user rather than container root, which removes the usual starting point for
+# container-escape chains and blocks in-container privilege operations (apt,
+# writing system dirs). The dependency layers above install as root into
+# read-only system site-packages; server.py writes nothing to disk, so the
+# runtime user needs no write access beyond its own home (created for any
+# library that expects a writable $HOME/.cache).
+RUN useradd --create-home --uid 10001 appuser
+USER appuser
+
 EXPOSE 8642
 CMD ["python", "server.py"]

@@ -38,6 +38,14 @@ OCR_MAX_DIMENSION=0 .venv/bin/python3 server.py
 everywhere memory is actually constrained — the 1200px default is there on
 purpose. The three run commands below all show this flag inline.
 
+A second gate, `OCR_MAX_UPLOAD_BYTES` (default 10 MB), rejects an oversized
+*request body* before it is read into memory — the backstop against a hostile
+or malformed upload, independent of pixel dimensions (see `../security.md`). A
+typical untiled dev photo is well under it, so it rarely needs touching; raise
+or disable it (`OCR_MAX_UPLOAD_BYTES=0`) only if a genuinely large untiled
+image is 413-rejected locally. The per-connection socket timeout is
+`OCR_SOCKET_TIMEOUT` (default 30 s); its default is fine for local runs.
+
 Thread counts (`OCR_INTRA_OP_THREADS`/`OCR_INTER_OP_THREADS`/`OCR_CV2_THREADS`)
 don't need a matching local override — their `-1` (auto-detect) default is
 already correct and fast for an unrestricted local run, container or not; the

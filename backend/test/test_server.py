@@ -7,6 +7,7 @@ detections found during the PaddleOCR/RapidOCR investigation. Run with:
 """
 import io
 import json
+import socket
 import sys
 import unittest
 import urllib.error
@@ -148,6 +149,40 @@ class HttpEndpointTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             urllib.request.urlopen(req)
         self.assertEqual(ctx.exception.code, 413)
+
+    def test_post_body_over_upload_cap_returns_413(self):
+        # The byte gate rejects on the declared Content-Length, before any read
+        # or decode -- so a body well under MAX_DIMENSION's pixel gate but over
+        # the byte cap is still refused. Shrunk here so the test needn't send
+        # megabytes; do_POST reads the module global per request.
+        self.addCleanup(setattr, server, "MAX_UPLOAD_BYTES", server.MAX_UPLOAD_BYTES)
+        server.MAX_UPLOAD_BYTES = 100
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/ocr",
+            data=b"x" * 500,
+            method="POST",
+        )
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(req)
+        self.assertEqual(ctx.exception.code, 413)
+
+    def test_post_invalid_content_length_returns_400(self):
+        # urllib computes Content-Length itself, so a non-numeric value needs a
+        # hand-built request over a raw socket.
+        with socket.create_connection(("127.0.0.1", self.port), timeout=5) as s:
+            s.sendall(
+                b"POST /ocr HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"Content-Length: notanumber\r\n"
+                b"\r\n"
+            )
+            status_line = s.recv(4096).split(b"\r\n", 1)[0]
+        self.assertIn(b"400", status_line)
+
+    def test_handler_has_a_socket_timeout(self):
+        # Guards against the http.server default (None = never time out), the
+        # slowloris exposure SOCKET_TIMEOUT exists to close.
+        self.assertIsNotNone(server.Handler.timeout)
 
     def test_get_unknown_path_returns_404(self):
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/nope")
