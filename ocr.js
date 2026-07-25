@@ -150,8 +150,8 @@ const state = {
   // message. Set by clearDetections(), which keeps `img` set and so isn't
   // caught by the worker's own `if (img)` guard.
   suppressScanSummary: false,
-  // Last message passed to setStatusMessage(), or null when idle (bare meta
-  // line only). updateMeta() re-renders it, so a pan/zoom/rotate refresh
+  // Last message passed to setStatusMessage(), or null when idle (bare info
+  // line only). updateInfoLine() re-renders it, so a pan/zoom/rotate refresh
   // doesn't wipe a message that's still active.
   lastStatusMessage: null,
 
@@ -162,7 +162,7 @@ const state = {
 };
 
 
-// ─── View, meta line, and the redraw flush ──────────────────────────────────
+// ─── View, info line, and the redraw flush ──────────────────────────────────
 
 function rotatedCanvas(image, rotationDeg) {
   const c = document.createElement("canvas");
@@ -189,37 +189,37 @@ function resetView({ preserveDetections = false } = {}) {
   }
   state.draftBox = null;
   state.hoverDeleteId = null;
-  updateMeta();
+  updateInfoLine();
   redraw();
 }
 
 // Info-line text: filename (if known), resolution, rotation, zoom. Shared by
-// updateMeta() and setStatusMessage(), which prepends it to a message.
-function metaLine() {
+// updateInfoLine() and setStatusMessage(), which prepends it to a message.
+function infoLine() {
   if (!state.full) return "";
   const name = state.fileName ? `${state.fileName} · ` : "";
   return `${name}${state.full.width}×${state.full.height}px · rotation ${state.rotation}° · zoom ${Math.round(state.view.scale * 100)}%`;
 }
 
-// Refreshes the meta portion of the status line, called on every
+// Refreshes the info portion of the status line, called on every
 // pan/zoom/rotate. Re-renders through setStatusMessage() while a message is
-// active, so the refresh doesn't overwrite it; falls back to the bare meta
+// active, so the refresh doesn't overwrite it; falls back to the bare info
 // line when idle.
-function updateMeta() {
+function updateInfoLine() {
   if (state.lastStatusMessage != null) {
     setStatusMessage(state.lastStatusMessage);
   } else {
-    statusEl.textContent = metaLine();
+    statusEl.textContent = infoLine();
   }
 }
 
-// The meta line stays regular text; the message half is wrapped in a
+// The info line stays regular text; the message half is wrapped in a
 // monospace span so it reads as a distinct system message.
 function setStatusMessage(msg) {
   state.lastStatusMessage = msg;
-  const meta = metaLine();
+  const info = infoLine();
   statusEl.textContent = "";
-  if (meta) statusEl.append(`${meta} — `);
+  if (info) statusEl.append(`${info} — `);
   const span = document.createElement("span");
   span.className = "status-msg";
   span.textContent = msg;
@@ -372,7 +372,7 @@ async function clearSession() {
   fileInput.value = "";
   ctx.clearRect(0, 0, display.width, display.height);
   state.lastStatusMessage = null; // don't let a stale message survive the clear
-  updateMeta();
+  updateInfoLine();
   updateButtons();
   renderResultsList();
 
@@ -402,7 +402,7 @@ function clearDetections() {
   thumbnails.clear();
   state.lastStatusMessage = null; // don't let a stale message survive the clear
 
-  updateMeta(); // re-renders the (now blank) status line
+  updateInfoLine(); // re-renders the (now blank) status line
   updateButtons();
   redraw();
 }
@@ -447,7 +447,7 @@ const thumbnails = createThumbnailCache({ state });
 
 // Canvas rendering and the view transform live in canvas-view.js; bind them to
 // the shared state, the canvas + its 2D context, the sizing/handle constants,
-// and the meta-line refresh they trigger on a view change, then rebind the
+// and the info-line refresh they trigger on a view change, then rebind the
 // entry points the rest of this file calls by their original names.
 const {
   redrawCanvas, zoomTo, zoomToBox, updateViewOffsets, clampView,
@@ -457,7 +457,7 @@ const {
   ctx,
   display,
   config: { MAX_SCALE, RESIZE_HANDLE_RADIUS, DELETE_HOTSPOT_RADIUS },
-  updateMeta,
+  updateInfoLine,
 });
 
 // Pointer, keyboard, and wheel interaction is wired in interaction.js; it
@@ -475,7 +475,7 @@ createInteraction({
   clampView,
   updateButtons,
   redraw,
-  updateMeta,
+  updateInfoLine,
   applyEditedBox,
   deleteSelected,
 });

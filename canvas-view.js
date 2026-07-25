@@ -5,7 +5,7 @@
 //
 // Holds no module state: createCanvasView() binds the render/view functions
 // to the shared `state`, the canvas element and its 2D context, the few
-// drawing constants, and updateMeta() (called after a view change to refresh
+// drawing constants, and updateInfoLine() (called after a view change to refresh
 // the zoom% in the info line). Returns the entry points the rest of the app
 // calls by name; the draw* helpers stay private to the closure. `state.full`
 // is the rotated source canvas everything is painted from.
@@ -20,7 +20,7 @@ export function createCanvasView({
   ctx,
   display,
   config: { MAX_SCALE, RESIZE_HANDLE_RADIUS, DELETE_HOTSPOT_RADIUS },
-  updateMeta,
+  updateInfoLine,
 }) {
 
   // Letterbox offset centering the rendered image on any axis it doesn't fill
@@ -50,7 +50,7 @@ export function createCanvasView({
     state.view.x = anchorSource.x - (anchorDisplayPt.x - state.view.offsetX) / state.view.scale;
     state.view.y = anchorSource.y - (anchorDisplayPt.y - state.view.offsetY) / state.view.scale;
     clampView();
-    updateMeta();
+    updateInfoLine();
     redrawCanvas(); // view-only: no list content changed, nothing to persist
   }
 
@@ -72,7 +72,7 @@ export function createCanvasView({
     state.view.x = centerX - (display.width / 2 - state.view.offsetX) / state.view.scale;
     state.view.y = centerY - (display.height / 2 - state.view.offsetY) / state.view.scale;
     clampView();
-    updateMeta();
+    updateInfoLine();
   }
 
   function strokeBoxPath(box) {

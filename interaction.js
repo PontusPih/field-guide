@@ -32,7 +32,7 @@ export function createInteraction({
   clampView,
   updateButtons,
   redraw,
-  updateMeta,
+  updateInfoLine,
   applyEditedBox,
   deleteSelected,
 }) {
@@ -154,7 +154,7 @@ export function createInteraction({
       state.view.x = panStart.vx - (p.x - panStart.px) / state.view.scale;
       state.view.y = panStart.vy - (p.y - panStart.py) / state.view.scale;
       clampView();
-      updateMeta();
+      updateInfoLine();
       redrawCanvas(); // view-only: no list content changed, nothing to persist
     } else if (dragging === "draw") {
       const sp = toSource(p, state.view);
@@ -241,7 +241,7 @@ export function createInteraction({
       state.view.x += e.deltaX / state.view.scale;
       state.view.y += e.deltaY / state.view.scale;
       clampView();
-      updateMeta();
+      updateInfoLine();
       redrawCanvas(); // view-only: no list content changed, nothing to persist
     }
   }, { passive: false });
