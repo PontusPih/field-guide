@@ -23,14 +23,9 @@
 // declarations (helpers, detection ops, session lifecycle), and finally the
 // wiring block that instantiates the modules, attaches listeners, and boots.
 
-import {
-  toSource, toDisplay, hitTestBoxes, distance, nearestWithinRadius, pointInPolygon,
-  boundsOf, overlapArea, cornersOf, resizedBounds, normalizedRectBox,
-} from "./geometry.js";
-import {
-  colorFor, canvasLabelFor, listLabelFor, selectNonOverlapping,
-} from "./detections.js";
-import { tileGrid, resolveTileSize, TILE_SIZE_STORAGE_KEY } from "./tiling.js";
+import { boundsOf, overlapArea } from "./geometry.js";
+import { selectNonOverlapping } from "./detections.js";
+import { resolveTileSize, TILE_SIZE_STORAGE_KEY } from "./tiling.js";
 import { resolveBackendUrl, BACKEND_URL_STORAGE_KEY, LOCALHOST_NAMES } from "./backend-config.js";
 import {
   persistImage, persistState, loadSession, clearStoredSession,

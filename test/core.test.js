@@ -5,6 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   parseHeaderLine, parseGuide, resolve, group, systemHints, busLabel, baseOf, buildExport,
+  normBus,
 } from "../core.js";
 
 // Fixture mirrors the 2002 format: two tables (module list + third-party list)
@@ -96,6 +97,14 @@ test("busLabel maps all codes; unknown -> 'bus n/a'", () => {
   assert.equal(busLabel("M"), "M-Bus");
   assert.equal(busLabel("D"), "D-Bus");
   assert.equal(busLabel(""), "bus n/a");
+});
+
+test("normBus folds '-' to empty, canonicalizes U/Q, leaves other codes untouched", () => {
+  assert.equal(normBus("-"), "");        // no bus
+  assert.equal(normBus("U/Q"), "Q/U");   // both buses, single canonical order
+  assert.equal(normBus("Q/U"), "Q/U");   // already canonical, unchanged
+  assert.equal(normBus("U"), "U");
+  assert.equal(normBus("CTI"), "CTI");
 });
 
 test("baseOf strips a revision suffix and upper-cases; keeps odd names whole", () => {
