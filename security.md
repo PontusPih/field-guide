@@ -112,31 +112,48 @@ to a process that is otherwise stateless.
 by user input, so no SSRF surface. There is no `subprocess`, `eval`, shell, or
 user-controlled filesystem path. No outbound network request is triggered by input.
 
-### MEDIUM — container runs as root, widening any native-decoder exploit [recommended]
+### MEDIUM — container ran as root, widening any native-decoder exploit [fixed]
 
 The real lateral-movement risk is a memory-corruption bug in the native image path
-(libjpeg / OpenCV / Pillow / onnxruntime) reached by a crafted image. The `Dockerfile` sets
-no `USER`, so such an exploit would execute as **root inside the container**, with whatever
-egress the platform allows.
+(libjpeg / OpenCV / Pillow / onnxruntime) reached by a crafted image. The `Dockerfile`
+previously set no `USER`, so such an exploit would execute as **root inside the container**,
+the usual starting point for container-escape chains.
 
-**Recommended.** Add a non-root `USER` to the `Dockerfile` — a property of the *image*,
-portable across Render and any host, and the one lever available here. This is distinct
-from *rootless Docker*, which is a property of the *host runtime* (the engine and its
-containers run under an unprivileged host account via user namespaces) and is not
-selectable on a managed platform like Render. The two are complementary: ship the non-root
-`USER` regardless; run the engine rootless as well if the service is ever self-hosted.
-Further defense-in-depth: read-only root filesystem, dropped capabilities, and restricted
-container egress. Keep the pinned native dependencies patched — pin-and-patch, not
-pin-and-forget.
+**Fix.** The `Dockerfile` now creates an unprivileged `appuser` (`useradd --create-home`)
+and switches to it (`USER appuser`) before `CMD`, after the root-only dependency install.
+An RCE now lands as non-root, which sharply reduces the escape surface and blocks
+in-container privilege operations (`apt`, writing system dirs). This is a property of the
+*image*, portable across Render and any host; it is distinct from *rootless Docker* (a
+*host runtime* property, not selectable on a managed platform like Render), which is a
+complementary layer worth adding only if the service is ever self-hosted.
 
-### LOW/INFO — open CORS and no authentication [recommended]
+**Still recommended (not applied).** Non-root limits *escape*, not *abuse*: an RCE at any
+privilege can still make outbound connections (botnet/C2/exfil) via the Python runtime, so
+the primary control for that is keeping the pinned native dependencies **patched** (stops
+the RCE happening at all) plus **egress restriction** where the platform allows it.
+Read-only root filesystem and dropped capabilities are further defense-in-depth.
 
-`Access-Control-Allow-Origin: *` with no auth means any web page can drive the backend
-using its visitors' browsers — free OCR compute and a way to amplify the DoS surface in
-section 1. There is no data-leak impact, since the service is stateless. If the only
-legitimate caller is the GitHub Pages origin, reflecting just that origin removes the
-amplification. Left open may be a deliberate choice for a public POC; noted so it stays a
-choice rather than an oversight.
+### LOW/INFO — open CORS [fixed]
+
+`Access-Control-Allow-Origin: *` let any web page drive the backend from its visitors'
+browsers and read the result — free OCR compute, and a way to spread calls across visitors'
+residential IPs to evade any per-IP limit. No data-leak impact (the service is stateless and
+holds no per-client data), so this is an abuse/authorization concern, not confidentiality.
+The Scan tool's request is already non-simple (an `image/png` body), so browsers preflight
+it; a rejected origin never sends the actual POST.
+
+**Fix.** CORS now reflects a single allow-listed origin instead of `*`
+(`ALLOWED_ORIGINS`, env `OCR_ALLOWED_ORIGINS`, default the deployed frontend origin), with
+`Vary: Origin` on the reflected response and `localhost`/`127.0.0.1` (any port) always
+allowed for local dev. A disallowed origin receives no `Access-Control-Allow-Origin`, so its
+preflight fails and the browser blocks both the read and — because the request is
+preflighted — the POST itself. Covered by the `test_preflight_*` / `test_star_allows_any_origin`
+tests. Set `OCR_ALLOWED_ORIGINS="*"` to restore the blanket policy.
+
+**Scope of the fix.** CORS is browser-enforced only: it stops *browser-embedded* cross-origin
+use (the distributed-abuse variant above) but cannot stop a non-browser client (`curl`, a
+script) from calling `/ocr`. Limiting call volume from any client remains a rate-limit / auth
+concern for the edge or proxy, unchanged by this.
 
 ## 3. Images leaking between clients
 
@@ -164,6 +181,7 @@ multiple people who must not see each other's scans needs separate OS or browser
 | `OCR_MAX_DIMENSION` | `1200` | Reject an image whose longer side exceeds this (post-read, pre-OCR). `0` disables. |
 | `OCR_QUEUE_MAXSIZE` | `2` | Max requests waiting on a worker; overflow returns `503`. |
 | `OCR_WORKERS` | `1` | OCR worker threads; bounds parallel compute. |
+| `OCR_ALLOWED_ORIGINS` | deployed frontend origin | Comma-separated origins whose browser JS may read `/ocr`; `localhost` always allowed; `*` allows any. |
 
 `OCR_MAX_UPLOAD_BYTES=0` and `OCR_MAX_DIMENSION=0` are the local-dev opt-outs for sending
 large untiled images (see `backend/README.md`); leave both at their defaults anywhere
@@ -173,6 +191,7 @@ memory is actually constrained.
 
 - Section 1: HIGH and MEDIUM findings **fixed** in `server.py` with tests in
   `backend/test/test_server.py`.
-- Section 2: **recommended** deployment hardening (non-root `USER`, CORS, egress) — not yet
-  applied; no code change lands these, they are `Dockerfile` / platform settings.
+- Section 2: non-root `USER` **fixed** in the `Dockerfile`; origin-restricted CORS **fixed**
+  in `server.py` (with tests). **Still recommended:** dependency patching, egress
+  restriction, read-only rootfs / dropped capabilities — platform settings, no code change.
 - Section 3: no change required; client-side caveat documented.

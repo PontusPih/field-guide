@@ -46,6 +46,12 @@ or disable it (`OCR_MAX_UPLOAD_BYTES=0`) only if a genuinely large untiled
 image is 413-rejected locally. The per-connection socket timeout is
 `OCR_SOCKET_TIMEOUT` (default 30 s); its default is fine for local runs.
 
+Cross-origin reads of `/ocr` are restricted to an allow-list
+(`OCR_ALLOWED_ORIGINS`, default the deployed frontend origin; see
+`../security.md`). A `localhost`/`127.0.0.1` frontend on any port is always
+allowed, so local development needs no override; set `OCR_ALLOWED_ORIGINS="*"`
+only to reproduce the old blanket policy.
+
 Thread counts (`OCR_INTRA_OP_THREADS`/`OCR_INTER_OP_THREADS`/`OCR_CV2_THREADS`)
 don't need a matching local override — their `-1` (auto-detect) default is
 already correct and fast for an unrestricted local run, container or not; the

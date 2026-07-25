@@ -22,6 +22,7 @@ import queue
 import resource
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse
 
 import cv2
 from PIL import Image
@@ -75,6 +76,35 @@ MAX_UPLOAD_BYTES = int(os.environ.get("OCR_MAX_UPLOAD_BYTES", 10 * 1024 * 1024))
 # of stalled connections exhaust threads at near-zero cost. A finite timeout
 # drops a connection that goes idle mid-request instead of pinning a thread.
 SOCKET_TIMEOUT = int(os.environ.get("OCR_SOCKET_TIMEOUT", 30))
+
+# Origins whose browser JS may read /ocr responses cross-origin (comma-separated
+# in the env var), reflected back one at a time rather than answered with a
+# blanket "*". CORS is browser-enforced only -- it cannot stop a non-browser
+# client (curl, a script) from calling the endpoint -- but restricting it does
+# defeat the browser-relayed abuse it otherwise enables: any web page could
+# drive this backend from its visitors' browsers and read the result (free OCR,
+# distributed across residential IPs to evade per-IP limits). The Scan tool's
+# request is already non-simple (image/png body), so it is preflighted; an
+# origin that fails the OPTIONS check never gets to send the POST at all.
+# localhost / 127.0.0.1 on any port are always allowed, so a local dev frontend
+# needs no override. Set OCR_ALLOWED_ORIGINS="*" to allow any origin (the prior
+# blanket behavior; a deliberate opt-out). Real call-rate abuse is a rate-limit
+# concern for the edge/proxy, not something CORS addresses -- see security.md.
+ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.environ.get("OCR_ALLOWED_ORIGINS", "https://field-guide.pdp8.se").split(",")
+    if o.strip()
+]
+ALLOW_ANY_ORIGIN = "*" in ALLOWED_ORIGINS
+
+
+def is_localhost_origin(origin):
+    """True for an http(s)://localhost[:port] or 127.0.0.1 origin -- always
+    allowed, so a dev frontend on any local port works without configuration."""
+    try:
+        return urlparse(origin).hostname in ("localhost", "127.0.0.1")
+    except ValueError:
+        return False
 
 # -1 matches RapidOCR/onnxruntime's own "unset, auto-detect" sentinel, so
 # these are safe to pass through unconditionally. Auto-detect is unreliable
@@ -205,9 +235,34 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send_error(404, "Not found")
 
+    def allowed_cors_origin(self):
+        """The Access-Control-Allow-Origin value to send for this request, or
+        None to send no CORS headers at all. None covers both a request with no
+        Origin (same-origin or a non-browser client, which needs no CORS) and a
+        cross-origin caller not on the allow-list (whose browser is then denied
+        the read)."""
+        origin = self.headers.get("Origin")
+        if origin is None:
+            return None
+        if ALLOW_ANY_ORIGIN:
+            return "*"
+        if origin in ALLOWED_ORIGINS or is_localhost_origin(origin):
+            return origin
+        return None
+
     def send_cors_headers(self):
-        # ocr.js runs on GitHub Pages, a different origin from this backend.
-        self.send_header("Access-Control-Allow-Origin", "*")
+        # ocr.js runs on a different origin from this backend, so /ocr and its
+        # preflight carry CORS headers -- but only reflecting an allow-listed
+        # origin, not a blanket "*". See ALLOWED_ORIGINS.
+        allow = self.allowed_cors_origin()
+        if allow is None:
+            return
+        self.send_header("Access-Control-Allow-Origin", allow)
+        # A reflected (non-"*") origin means the response varies by request
+        # Origin; without this a shared cache could serve one origin's allowed
+        # response to another.
+        if allow != "*":
+            self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
@@ -287,12 +342,14 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     start_workers(NUM_WORKERS)
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    origins = "* (any)" if ALLOW_ANY_ORIGIN else ", ".join(ALLOWED_ORIGINS) + " (+localhost)"
     print(
         f"OCR backend v{VERSION} ({COMMIT_SHA}) on http://0.0.0.0:{PORT} "
         f"({NUM_WORKERS} OCR worker(s), max_dimension={MAX_DIMENSION}px, "
         f"max_upload={MAX_UPLOAD_BYTES}B, socket_timeout={SOCKET_TIMEOUT}s, "
         f"intra_op={INTRA_OP_THREADS}, inter_op={INTER_OP_THREADS}, "
-        f"cv2_threads={CV2_THREADS})"
+        f"cv2_threads={CV2_THREADS})\n"
+        f"  CORS allowed origins: {origins}"
     )
     server.serve_forever()
 

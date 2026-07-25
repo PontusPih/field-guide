@@ -184,6 +184,49 @@ class HttpEndpointTests(unittest.TestCase):
         # slowloris exposure SOCKET_TIMEOUT exists to close.
         self.assertIsNotNone(server.Handler.timeout)
 
+    def _preflight(self, origin):
+        # The preflight OPTIONS is where the CORS decision is observable without
+        # running OCR (the Scan tool's image/png POST is non-simple, so a real
+        # browser sends this first).
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/ocr",
+            method="OPTIONS",
+            headers={"Origin": origin, "Access-Control-Request-Method": "POST"},
+        )
+        with urllib.request.urlopen(req) as resp:
+            return resp.status, resp.headers
+
+    def _restrict_to(self, *origins):
+        self.addCleanup(setattr, server, "ALLOWED_ORIGINS", server.ALLOWED_ORIGINS)
+        self.addCleanup(setattr, server, "ALLOW_ANY_ORIGIN", server.ALLOW_ANY_ORIGIN)
+        server.ALLOWED_ORIGINS = list(origins)
+        server.ALLOW_ANY_ORIGIN = False
+
+    def test_preflight_from_allowed_origin_is_reflected(self):
+        self._restrict_to("https://good.example")
+        status, headers = self._preflight("https://good.example")
+        self.assertEqual(status, 204)
+        self.assertEqual(headers.get("Access-Control-Allow-Origin"), "https://good.example")
+        self.assertIn("Origin", headers.get("Vary", ""))  # reflected origin must Vary
+
+    def test_preflight_from_disallowed_origin_has_no_cors(self):
+        self._restrict_to("https://good.example")
+        status, headers = self._preflight("https://evil.example")
+        self.assertEqual(status, 204)
+        # No ACAO header -> the browser blocks the actual POST at the preflight.
+        self.assertIsNone(headers.get("Access-Control-Allow-Origin"))
+
+    def test_preflight_from_localhost_is_allowed_without_config(self):
+        self._restrict_to("https://good.example")  # localhost deliberately not listed
+        _, headers = self._preflight("http://localhost:5173")
+        self.assertEqual(headers.get("Access-Control-Allow-Origin"), "http://localhost:5173")
+
+    def test_star_allows_any_origin(self):
+        self.addCleanup(setattr, server, "ALLOW_ANY_ORIGIN", server.ALLOW_ANY_ORIGIN)
+        server.ALLOW_ANY_ORIGIN = True
+        _, headers = self._preflight("https://anything.example")
+        self.assertEqual(headers.get("Access-Control-Allow-Origin"), "*")
+
     def test_get_unknown_path_returns_404(self):
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/nope")
         with self.assertRaises(urllib.error.HTTPError) as ctx:
