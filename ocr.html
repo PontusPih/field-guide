@@ -32,9 +32,18 @@
   #resultsHeaderActions { display: flex; gap: 0.3rem; }
   #results { list-style: none; margin: 0; padding: 0; font-family: var(--mono); font-size: 0.85rem; }
   .result-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0; border-bottom: 1px solid #eee; }
-  .result-thumb { max-height: 36px; max-width: 90px; border: 1px solid #ccc; background: #fff; flex-shrink: 0; }
+  .result-num { flex-shrink: 0; width: 2ch; text-align: right; color: #999; }
+  /* Fixed-width slot so every row's text and icons line up; the crop keeps its
+     aspect ratio (object-fit) and sits at the left edge (object-position), so
+     narrow thumbs leave whitespace on the right rather than being centered. */
+  .result-thumb { width: 90px; height: 36px; object-fit: contain; object-position: left center; flex-shrink: 0; cursor: zoom-in; }
   .result-info { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
-  .result-label { overflow-wrap: break-word; }
+  .result-headline { display: flex; align-items: baseline; gap: 0.4rem; }
+  .result-status { flex-shrink: 0; }
+  .result-label { overflow-wrap: break-word; cursor: text; }
+  /* The inline label editor fills the row between the status glyph and the
+     delete button; min-width:0 lets it shrink instead of pushing the button out. */
+  .label-edit { flex: 1 1 auto; min-width: 0; box-sizing: border-box; font: inherit; }
   .overlap-warning { font-size: 0.75rem; color: #e67e22; }
   .result-icons { margin-left: auto; display: flex; gap: 0.35rem; flex-shrink: 0; }
   .icon-btn {

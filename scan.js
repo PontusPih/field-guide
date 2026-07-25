@@ -120,7 +120,7 @@ export function createScan({
     // Skips boxes already queued: one placeholder entry per box, so a second
     // click can't overwrite bookkeeping the first click's tiles still refer to.
     const pending = state.detections.filter(
-      (d) => d.score == null && !d.attempted && !state.pendingPlaceholders.has(d.id),
+      (d) => d.score == null && !d.attempted && !d.manual && !state.pendingPlaceholders.has(d.id),
     );
     if (pending.length === 0) return;
 

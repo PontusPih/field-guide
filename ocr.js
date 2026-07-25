@@ -235,14 +235,17 @@ function redraw() {
 
 // ─── Detection operations ───────────────────────────────────────────────────
 
-// Editing a box invalidates its recognition (the region it covers changed),
-// so it goes back to pending and is marked "manual".
+// Moving/resizing a box invalidates its OCR recognition (the region it covers
+// changed), so it goes back to pending. A hand-entered label is exempt: it is
+// authoritative and the box is only an approximate location, so a geometry edit
+// (or any later rescan) leaves the manual text untouched.
 function applyEditedBox(detection, newBox) {
   detection.box = newBox;
+  detection.source = "manual";
+  if (detection.manual) return;
   detection.text = null;
   detection.score = null;
   detection.attempted = false;
-  detection.source = "manual";
 }
 
 // Detections whose bounding rects intersect — likely duplicate reads of the
@@ -337,10 +340,12 @@ function updateButtons() {
   // bookkeeping (see recognizePendingBoxes()), so this can stay enabled and
   // just add to the shared queue rather than needing the same gating as
   // "OCR full photo".
-  recognizePendingBtn.disabled = !state.detections.some((d) => d.score == null && !d.attempted);
+  recognizePendingBtn.disabled = !state.detections.some((d) => d.score == null && !d.attempted && !d.manual);
   pruneOverlappingBtn.disabled = computeOverlapWarnings().size === 0;
   pruneEmptyBtn.disabled = !state.detections.some((d) => d.score == null && d.attempted);
-  goToGuideBtn.disabled = !state.detections.some((d) => d.score != null);
+  // Enabled when any box carries usable text -- an OCR read or a hand-entered
+  // label (which has no score). A blank manual label ("no label here") doesn't count.
+  goToGuideBtn.disabled = !state.detections.some((d) => d.text && d.text.trim());
   clearBtn.disabled = !hasImage && state.detections.length === 0;
   clearBoxesBtn.disabled = state.detections.length === 0;
 }
@@ -555,14 +560,15 @@ fileInput.addEventListener("change", () => {
   nextImg.src = url;
 });
 
-// Hands every recognized detection's text to guide.js via sessionStorage.
-// Not deduped: a real board pile can hold several copies of the same board,
-// and guide.js counts quantities to allocate complete sets. Use "Prune
-// overlapping" first if a region got detected more than once by mistake;
-// every box left after that counts as one real board.
+// Hands every labelled detection's text to guide.js via sessionStorage -- both
+// OCR reads and hand-entered labels (a blank manual "no label" box carries no
+// text and is skipped). Not deduped: a real board pile can hold several copies
+// of the same board, and guide.js counts quantities to allocate complete sets.
+// Use "Prune overlapping" first if a region got detected more than once by
+// mistake; every box left after that counts as one real board.
 goToGuideBtn.addEventListener("click", () => {
   const numbers = state.detections
-    .filter((d) => d.score != null && d.text && d.text.trim())
+    .filter((d) => d.text && d.text.trim())
     .map((d) => d.text.trim());
   if (numbers.length === 0) return;
   sessionStorage.setItem(SCAN_HANDOFF_KEY, numbers.join("\n"));
