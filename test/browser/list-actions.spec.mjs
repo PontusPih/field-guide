@@ -130,11 +130,7 @@ describe("list bulk actions", { skip: chromePath ? false : "no Chrome found" }, 
     ]);
 
     page.dialogAccept = true; // confirm() the "Clear all boxes?" prompt
-    await page.evaluate(`
-      document.getElementById("clearMenuToggle").click();
-      document.getElementById("clearImage").click();
-      true
-    `);
+    await page.evaluate(`document.getElementById("clearBoxes").click(); true`);
     await page.waitFor(`document.querySelectorAll("#results li").length === 0`, "boxes cleared");
 
     assert.equal((await readState(page)).detections.length, 0);
@@ -152,11 +148,7 @@ describe("list bulk actions", { skip: chromePath ? false : "no Chrome found" }, 
     // returns, and confirm() blocks synchronously until the dialog is
     // answered -- so by the time this resolves, clearImage() has already
     // read `false` back and returned. No wait beyond that is needed.
-    await page.evaluate(`
-      document.getElementById("clearMenuToggle").click();
-      document.getElementById("clearImage").click();
-      true
-    `);
+    await page.evaluate(`document.getElementById("clearBoxes").click(); true`);
     page.dialogAccept = true;
 
     assert.equal((await readState(page)).detections.length, 1, "declining should leave the box in place");

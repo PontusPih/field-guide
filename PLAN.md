@@ -310,10 +310,17 @@ ledger entry, no rework of anything above.
       shared `emptyBatch()` helper the three whole-batch operations (Finish/Clear
       batch/Clear all) call to reset `state.images`/UI/`clearStoredBatch()` in common, differing
       only in whether they also touch `labels` (`deleteLabels`/`clearAllLabels`) and whether
-      they `confirm()` first. `ocr.html`: `clearImage`/`dropImage`/`clearBatch`/`clearAll` live
-      behind a plain-JS "Clear ▾" `.dropdown` (open on toggle click, close on outside
-      click/Escape/choosing an item); `finishBatch` stays a standalone button, the only one of
-      the five with no confirmation, since nothing is lost.
+      they `confirm()` first. `ocr.html`: `dropImage`/`clearBatch`/`clearAll` live behind a
+      plain-JS "Clear ▾" `.dropdown` (open on toggle click, close on outside click/Escape/
+      choosing an item); `finishBatch` stays a standalone button, the only one of the five with
+      no confirmation, since nothing is lost.
+      **Correction, made unprompted then reverted on the author's say-so:** Clear image
+      (the original "Clear boxes" icon button next to the results list) was first folded into
+      the "Clear ▾" menu alongside the other three for consistency — the author's own call to
+      make, not something asked for, and on trying it the standalone button turned out more
+      intuitive (it's used often enough that a menu click was a step backward). Reverted:
+      Clear image is back as the standalone `clearBoxes` icon button; the menu holds only
+      Drop image / Clear batch / Clear all.
       New `test/browser/clear-operations.spec.mjs` (4 tests) covers what's new: Drop image
       changes only batch membership (ledger entry survives, the next image becomes active);
       Finish batch skips confirmation entirely and every dropped image's ground truth

@@ -111,10 +111,10 @@ const cancelScanBtn = document.getElementById("cancelScan");
 const recognizePendingBtn = document.getElementById("recognizePending");
 const pruneOverlappingBtn = document.getElementById("pruneOverlapping");
 const pruneEmptyBtn = document.getElementById("pruneEmpty");
+const clearBoxesBtn = document.getElementById("clearBoxes");
 const finishBatchBtn = document.getElementById("finishBatch");
 const clearMenuToggle = document.getElementById("clearMenuToggle");
 const clearMenuItems = document.getElementById("clearMenuItems");
-const clearImageBtn = document.getElementById("clearImage");
 const dropImageBtn = document.getElementById("dropImage");
 const clearBatchBtn = document.getElementById("clearBatch");
 const clearAllBtn = document.getElementById("clearAll");
@@ -385,7 +385,7 @@ function updateButtons() {
   // label (which has no score). A blank manual label ("no label here") doesn't count.
   goToGuideBtn.disabled = !detections.some((d) => d.text && d.text.trim());
   finishBatchBtn.disabled = state.images.length === 0;
-  clearImageBtn.disabled = detections.length === 0;
+  clearBoxesBtn.disabled = detections.length === 0;
   dropImageBtn.disabled = !active;
   clearBatchBtn.disabled = state.images.length === 0;
   // clearAllBtn is deliberately never disabled: it targets the whole
@@ -399,7 +399,11 @@ function updateButtons() {
 
 // The five Clear-family operations (PLAN.md, "Multi-image workflow"), an
 // escalation by scope -- only Clear batch and Clear all ever touch the
-// permanent `labels` ledger:
+// permanent `labels` ledger. Clear image is the odd one out in the UI: it
+// predates the other four (the original "Clear boxes" button) and stays a
+// plain icon button next to the results list rather than joining the "Clear
+// ▾" menu -- the author found that placement more intuitive, and it's used
+// often enough that a menu click would be a step backward.
 //
 //   Clear image  -- active image's boxes only, image stays, ledger reflects
 //                   the edit normally (no special-casing needed)
@@ -412,7 +416,8 @@ function updateButtons() {
 //   Clear all    -- whole batch emptied, *every* ledger entry ever deleted
 
 // Drops every box on the active image (drawn, pending, or recognized) but
-// keeps it loaded.
+// keeps it loaded. The "Clear boxes" icon button next to the results list,
+// not the "Clear ▾" menu -- see the comment above.
 function clearImage() {
   const active = state.active;
   if (!active || active.detections.length === 0) return;
@@ -665,8 +670,7 @@ document.addEventListener("keydown", (e) => {
   }
 });
 for (const [btn, action] of [
-  [clearImageBtn, clearImage], [dropImageBtn, dropImage],
-  [clearBatchBtn, clearBatch], [clearAllBtn, clearAll],
+  [dropImageBtn, dropImage], [clearBatchBtn, clearBatch], [clearAllBtn, clearAll],
 ]) {
   btn.addEventListener("click", () => {
     clearMenuItems.hidden = true;
@@ -674,6 +678,7 @@ for (const [btn, action] of [
     action();
   });
 }
+clearBoxesBtn.addEventListener("click", clearImage);
 
 rotateLeftBtn.addEventListener("click", () => rotate(-90));
 rotateRightBtn.addEventListener("click", () => rotate(90));
