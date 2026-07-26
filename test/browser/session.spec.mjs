@@ -84,18 +84,18 @@ describe("session persistence", { skip: chromePath ? false : "no Chrome found" }
       // clearSession()'s IndexedDB delete is awaited *after* its synchronous
       // UI reset, so it can still be in flight once the assertions above
       // pass. Reloading before it lands would race the delete -- wait for the
-      // storage to actually be empty first.
+      // batch record (cleared by clearStoredBatch()) to actually be gone first.
       await page.waitFor(`
         new Promise((resolve, reject) => {
-          const req = indexedDB.open("field-guide-scan", 1);
+          const req = indexedDB.open("field-guide-scan", 2);
           req.onsuccess = () => {
-            const g = req.result.transaction("session", "readonly").objectStore("session").get("image");
+            const g = req.result.transaction("batch", "readonly").objectStore("batch").get("current");
             g.onsuccess = () => resolve(g.result === undefined);
             g.onerror = () => reject(g.error);
           };
           req.onerror = () => reject(req.error);
         })
-      `, "the stored image to be cleared");
+      `, "the stored batch to be cleared");
 
       await page.goto(`${origin}/ocr.html`);
       await page.waitFor(`!!document.getElementById("runOcr")`, "app boot");

@@ -37,19 +37,26 @@ describe("list bulk actions", { skip: chromePath ? false : "no Chrome found" }, 
     await loadSyntheticPhoto(page);
   });
 
-  // Writes `detections` straight into the persisted session and reloads, so
-  // ocr.js's in-memory state picks them up via restoreSession(). Bypasses
-  // drawing/recognition entirely -- these tests are about what the buttons do
-  // to a given detection list, not how that list came to exist.
+  // Writes `detections` straight into the active image's persisted label entry
+  // and reloads, so ocr.js's in-memory state picks them up via restoreBatch().
+  // Bypasses drawing/recognition entirely -- these tests are about what the
+  // buttons do to a given detection list, not how that list came to exist.
+  // beforeEach's loadSyntheticPhoto() has already loaded (and hashed) a real
+  // image, so this only needs to overwrite its ledger entry, not create one.
   async function seedDetections(detections) {
     await page.evaluate(`
       (async () => {
-        const req = indexedDB.open("field-guide-scan", 1);
+        const req = indexedDB.open("field-guide-scan", 2);
         await new Promise((resolve) => { req.onsuccess = resolve; });
         const db = req.result;
-        const tx = db.transaction("session", "readwrite");
-        tx.objectStore("session").put(
-          { rotation: 0, detections: ${JSON.stringify(detections)} }, "state");
+        const active = await new Promise((resolve, reject) => {
+          const g = db.transaction("batch", "readonly").objectStore("batch").get("current");
+          g.onsuccess = () => resolve(g.result.active);
+          g.onerror = () => reject(g.error);
+        });
+        const tx = db.transaction("labels", "readwrite");
+        tx.objectStore("labels").put(
+          { filename: "synthetic.png", rotation: 0, detections: ${JSON.stringify(detections)} }, active);
         await new Promise((resolve) => { tx.oncomplete = resolve; });
       })()
     `);

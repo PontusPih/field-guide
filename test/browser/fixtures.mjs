@@ -51,6 +51,24 @@ async function loadSyntheticPhoto(
     })()
   `);
   await page.waitFor(`!document.getElementById("runOcr").disabled`, "photo to load");
+  // ocr.js's fileInput handler enables the UI synchronously but hashes and
+  // persists the batch (images/labels/batch stores) afterward, unawaited --
+  // the same fire-and-forget precedent as the old single-slot persistImage().
+  // A test that reads IndexedDB directly right after this resolves (e.g. to
+  // seed detections by sha256, see list-actions/interaction/label-editing
+  // specs) would otherwise race that write, so wait for it to actually land
+  // rather than trusting the visual cue alone.
+  await page.waitFor(`
+    new Promise((resolve, reject) => {
+      const req = indexedDB.open("field-guide-scan", 2);
+      req.onsuccess = () => {
+        const g = req.result.transaction("batch", "readonly").objectStore("batch").get("current");
+        g.onsuccess = () => resolve(!!g.result?.active);
+        g.onerror = () => reject(g.error);
+      };
+      req.onerror = () => reject(req.error);
+    })
+  `, "batch to be persisted");
 }
 
 async function stageRect(page) {
@@ -91,31 +109,54 @@ async function clickFrac(page, rect, fx, fy) {
 const scanIdle = (page) => page.waitFor(
   `document.getElementById("cancelScan").disabled`, "scan to finish");
 
-// The persisted session is the only place box geometry and recognition state
-// are observable from outside the module -- ocr.js keeps `detections` in
-// closure scope, never on `window`.
+// The persisted batch is the only place box geometry and recognition state
+// are observable from outside the module -- ocr.js keeps `state.images` in
+// closure scope, never on `window`. Schema is session-store.js's three
+// stores (images/labels/batch, see PLAN.md "Multi-image workflow"); every
+// spec so far only ever loads one image, so this resolves the *active*
+// image's ledger entry -- {filename, rotation, detections}, a superset of the
+// old single-session shape, so existing `.detections`/`.rotation` assertions
+// are unaffected by the schema change underneath.
 async function readState(page) {
   return JSON.parse(await page.evaluate(`
     new Promise((resolve, reject) => {
-      const req = indexedDB.open("field-guide-scan", 1);
+      const req = indexedDB.open("field-guide-scan", 2);
       req.onsuccess = () => {
-        const g = req.result.transaction("session", "readonly").objectStore("session").get("state");
-        g.onsuccess = () => resolve(JSON.stringify(g.result ?? null));
-        g.onerror = () => reject(g.error);
+        const db = req.result;
+        const bg = db.transaction("batch", "readonly").objectStore("batch").get("current");
+        bg.onsuccess = () => {
+          const active = bg.result?.active;
+          if (!active) { resolve(JSON.stringify(null)); return; }
+          const lg = db.transaction("labels", "readonly").objectStore("labels").get(active);
+          lg.onsuccess = () => resolve(JSON.stringify(lg.result ?? null));
+          lg.onerror = () => reject(lg.error);
+        };
+        bg.onerror = () => reject(bg.error);
       };
       req.onerror = () => reject(req.error);
     })
   `));
 }
 
+// Reads the active image's stored File's own .name from the `images` store
+// (not the `labels` store's plain filename string) -- proves the File object
+// itself round-trips through IndexedDB, not just its bytes, since only a File
+// (not a bare Blob) carries a name.
 async function readImageName(page) {
   return page.evaluate(`
     new Promise((resolve, reject) => {
-      const req = indexedDB.open("field-guide-scan", 1);
+      const req = indexedDB.open("field-guide-scan", 2);
       req.onsuccess = () => {
-        const g = req.result.transaction("session", "readonly").objectStore("session").get("image");
-        g.onsuccess = () => resolve(g.result?.name ?? null);
-        g.onerror = () => reject(g.error);
+        const db = req.result;
+        const bg = db.transaction("batch", "readonly").objectStore("batch").get("current");
+        bg.onsuccess = () => {
+          const active = bg.result?.active;
+          if (!active) { resolve(null); return; }
+          const ig = db.transaction("images", "readonly").objectStore("images").get(active);
+          ig.onsuccess = () => resolve(ig.result?.name ?? null);
+          ig.onerror = () => reject(ig.error);
+        };
+        bg.onerror = () => reject(bg.error);
       };
       req.onerror = () => reject(req.error);
     })

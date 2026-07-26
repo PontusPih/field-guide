@@ -237,13 +237,45 @@ last time and get correct reattach-old/blank-new behavior with no name at all �
 purely organizational polish, addable later as an optional field on the `batch` record and each
 ledger entry, no rework of anything above.
 
-- [ ] `session-store.js`: rewrite to the three-store schema above (`loadBatch`,
-      `clearStoredBatch`, `persistLabel`, `persistBatchMeta`, plus the deletion helpers the
-      five Clear operations need); a `sha256Hex(blob)` hashing helper (`crypto.subtle.digest`).
-- [ ] Repoint `canvas-view`/`interaction`/`results-list`/`scan`/`thumbnails`/`ocr.js` onto
-      `state.active.<field>`, per the read/write distinction above. `test/browser/fixtures.mjs`'s
-      `readState()` reads the old single-key shape directly — every existing browser spec that
-      calls it needs updating to the new schema; this is the largest mechanical cost of the step.
+- [x] `session-store.js`: rewritten to the three-store schema above (`loadBatch`,
+      `clearStoredBatch`, `persistLabel`, `persistBatchMeta`, `replaceImages`, `deleteImage`,
+      `deleteLabels`, `clearAllLabels`); `hashing.js`'s `sha256Hex(blob)` (`crypto.subtle.digest`),
+      unit-tested against known vectors cross-checked with Node's own `crypto.createHash`. Every
+      write that a caller might want to surface logs, then rethrows (rather than the old
+      swallow-only pattern), so a failed save is never silently invisible.
+- [x] Repointed `canvas-view`/`interaction`/`results-list`/`scan`/`thumbnails`/`ocr.js` onto
+      `state.active.<field>` (a getter resolving `state.images.find(i => i.id === activeId)`).
+      Done as a careful per-call-site pass, not the step-9 tokenizer script: `state.active` can be
+      `null`, so every *read* guard became `state.active?.field` (or an early-return
+      `const active = state.active; if (!active) return;`), while every *write* stayed bare
+      `active.field = …`. `scan.js` captures `state.active` once at the top of
+      `ensureWorkerRunning()` and uses that reference throughout, so a scan stays correct even if
+      the "no switching mid-scan" UI constraint (image-switcher, below) were ever relaxed.
+      One real bug the repoint surfaced and fixed: `thumbnails.js`'s cache was keyed by
+      `detection.id` alone, which is only unique *within* one image (each image's ids restart at
+      1) — two images could otherwise collide and show each other's cached crop. Now keyed by
+      `${imageId}:${detectionId}`, and `clear()` takes an optional image id to scope the
+      invalidation instead of always wiping every image's cache.
+      `test/browser/fixtures.mjs`'s `readState()`/`readImageName()` rewritten for the new schema
+      (resolving the active image via the `batch` store, then its `labels`/`images` entry) — the
+      returned shape (`{filename, rotation, detections}`) is a superset of the old one, so no
+      spec's assertions needed to change, only the raw-IndexedDB seed helpers three specs use
+      (`list-actions`/`interaction`/`label-editing`) to target the new per-image keys. Surfaced
+      and fixed a real race along the way: `loadSyntheticPhoto()` only waited for the visual
+      "loaded" cue (button enabled), but `ocr.js` hashes and persists the batch afterward,
+      unawaited (the same fire-and-forget precedent as the old `persistImage()`) — a seed helper
+      reading IndexedDB right after could run before that write landed. Fixed by having the
+      fixture wait for the real persisted state, the same precedent as the earlier
+      Clear-boxes-then-reload race fix (see "Two mistakes worth recording" above).
+      **Verified:** 95 unit + 39 browser tests green, run twice to rule out flakiness from the
+      timing change. Batch-of-one behavior (the only shape reachable before task below) is
+      unchanged from pre-repoint.
+      Interim scope, not yet done: `clearSession()`/`clearDetections()` keep their original
+      names/buttons and semantics for now (they already implement what the five-operation table
+      calls "Clear batch"/"Clear image" respectively) — the rename, the other three operations,
+      and the "Clear ▾" menu are the follow-up step below, reusing this logic rather than
+      redoing it. The file input still accepts one file; multi-file + the ledger-reattach flow
+      is the next step.
 - [ ] Multi-file input + the batch-load flow (hash, ledger reattach, purge, persist).
 - [ ] The five Clear-family operations + the "Clear ▾" menu + the standalone "Finish batch"
       button.

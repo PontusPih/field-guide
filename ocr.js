@@ -1,9 +1,9 @@
-// Scan tool frontend. Load a photo, rotate in 90-degree steps, pan/zoom,
-// run OCR against the backend, edit the resulting boxes (select, delete,
-// draw new ones), then hand the recognized module numbers to guide.js.
+// Scan tool frontend. Load one or more photos, rotate in 90-degree steps,
+// pan/zoom, run OCR against the backend, edit the resulting boxes (select,
+// delete, draw new ones), then hand the recognized module numbers to guide.js.
 // Coordinate transforms and hit-testing live in geometry.js as pure,
-// DOM-free functions. The loaded image and its boxes persist in IndexedDB
-// (see session-store.js), so reopening the page restores them.
+// DOM-free functions. The current batch of images persists in IndexedDB
+// (see session-store.js), so reopening the page restores where you left off.
 //
 // Gesture model:
 //   - plain left-drag on empty canvas  -> draw a new box
@@ -20,15 +20,22 @@
 //
 // This file is the composition root. It reads top-to-bottom in bands: imports,
 // config/constants, DOM refs, the shared `state` object, the function
-// declarations (helpers, detection ops, session lifecycle), and finally the
+// declarations (helpers, detection ops, batch lifecycle), and finally the
 // wiring block that instantiates the modules, attaches listeners, and boots.
+//
+// See PLAN.md, "Multi-image workflow", for the design behind `state.images`/
+// `state.active`: an "image" is one loaded photo and its working state; a
+// "batch" is the current set of loaded images (state.images collectively).
+// "Session" (session-store.js) keeps its original, broader meaning -- the
+// tool's whole persisted working state -- and is never used for one image.
 
 import { boundsOf, overlapArea } from "./geometry.js";
 import { selectNonOverlapping } from "./detections.js";
 import { resolveTileSize, TILE_SIZE_STORAGE_KEY } from "./tiling.js";
 import { resolveBackendUrl, BACKEND_URL_STORAGE_KEY, LOCALHOST_NAMES } from "./backend-config.js";
+import { sha256Hex } from "./hashing.js";
 import {
-  persistImage, persistState, loadSession, clearStoredSession,
+  loadBatch, persistLabel, persistBatchMeta, replaceImages, clearStoredBatch, deleteLabels,
 } from "./session-store.js";
 import { createScan } from "./scan.js";
 import { createCanvasView } from "./canvas-view.js";
@@ -116,50 +123,51 @@ const resultsEl = document.getElementById("results");
 // reference so canvas-view.js, interaction.js, and scan.js can reassign a
 // field and have this module observe it -- which an exported `let` binding
 // cannot do, module live bindings being import-side read-only.
-// Interaction-transient state lives inside interaction.js's closure, not here:
-// only the pointer handlers touch it, so it needs no cross-module sharing.
+//
+// `images` is the current batch; each entry holds one image's full working
+// state. `active` is a getter, not a plain field: it always resolves to
+// whichever image `activeId` currently names (or null, if nothing is loaded),
+// so `state.active.<field>` reads/writes always reach the right image without
+// needing to keep a separate reference in sync after a batch change.
+//
+// scanQueue/pendingPlaceholders/tileOverlay/scanAbortController/
+// suppressScanSummary/lastStatusMessage stay top-level, not per-image: v1
+// deliberately keeps scanning exclusive to the active image (see scan.js), and
+// the status line is a single line regardless of which image is active.
 const state = {
-  img: null,           // loaded HTMLImageElement, full source resolution
-  fileName: "",        // original filename of the loaded image, shown in the info line
-  rotation: 0,         // 0 | 90 | 180 | 270, clockwise
-  full: null,          // offscreen canvas: full-res image at current rotation
-  view: { scale: 1, x: 0, y: 0 },
-  minScale: 1,
+  images: [],
+  activeId: null,
+  nextImageId: 1, // monotonic id source for images, mirrors each image's own detection nextId
 
-  detections: [],      // [{ id, box: [[x,y]x4] in source coords, text, score }]
-  nextId: 1,
-
-  // A whole-photo "OCR full photo" and a drawn box are both just regions; each is
-  // reduced at enqueue time to tile-sized crops in full-image coordinates,
-  // drained by one worker (see ensureWorkerRunning()).
-  // [{ box: [x0,y0,x1,y1], kind: "auto" | "manual", placeholderId? }]
   scanQueue: [],
-  // placeholderId -> { placeholder, remaining, found: [], gotUpscaleBoost }.
-  // A manual region may span several tiles; its placeholder is spliced out
-  // only once every tile it produced has reported back.
   pendingPlaceholders: new Map(),
-  // [{ box: [x0,y0,x1,y1], done }] in source coords, one entry per queued/
-  // in-flight/completed tile for the whole current drain -- empty when idle.
   tileOverlay: [],
-  // Non-null while the queue worker is draining -- both the "scan running"
-  // flag and the means to cancel it (cancelScanBtn, clearSession(),
-  // clearDetections(), and loading a new photo all call .abort()). Rotation is
-  // disabled while it's set, since rotate() doesn't remap tileOverlay.
   scanAbortController: null,
-  // One-shot: tells ensureWorkerRunning()'s finally to skip its completion
-  // message. Set by clearDetections(), which keeps `img` set and so isn't
-  // caught by the worker's own `if (img)` guard.
   suppressScanSummary: false,
-  // Last message passed to setStatusMessage(), or null when idle (bare info
-  // line only). updateInfoLine() re-renders it, so a pan/zoom/rotate refresh
-  // doesn't wipe a message that's still active.
   lastStatusMessage: null,
-
-  selectedId: null,
-  draftBox: null,      // { x0, y0, x1, y1 } in source coords, while drawing a new box
-  hoverDeleteId: null, // id of the box whose delete-X is currently shown
-  hoverBoxId: null,    // id of the box the cursor is currently over (declutter: reveals full label)
 };
+Object.defineProperty(state, "active", {
+  get() {
+    return state.images.find((img) => img.id === state.activeId) ?? null;
+  },
+});
+
+// Fields a freshly-created image entry starts with; used by both the file
+// input handler and restoreBatch() so the two can't drift apart.
+function newImageEntry({ id, sha256, fileName, img, rotation, detections }) {
+  return {
+    id, sha256, fileName, img, rotation,
+    full: null, // computed by renderActiveView() once this image is made active
+    view: { scale: 1, x: 0, y: 0 },
+    minScale: 1,
+    detections,
+    nextId: detections.reduce((max, d) => Math.max(max, d.id), 0) + 1,
+    selectedId: null,
+    draftBox: null,
+    hoverDeleteId: null,
+    hoverBoxId: null,
+  };
+}
 
 
 // ─── View, info line, and the redraw flush ──────────────────────────────────
@@ -176,29 +184,34 @@ function rotatedCanvas(image, rotationDeg) {
   return c;
 }
 
-function resetView({ preserveDetections = false } = {}) {
-  state.full = rotatedCanvas(state.img, state.rotation);
+// (Re)renders the active image into its offscreen canvas and computes its
+// initial view/minScale against the shared display's current size. Called
+// once, the first time an image becomes active, and again after rotating it.
+// An already-initialized image keeps its own view across switches (each is a
+// field on the image itself, not shared), so switching back to one never
+// resets pan/zoom -- see the image-switcher.
+function renderActiveView() {
+  const active = state.active;
+  active.full = rotatedCanvas(active.img, active.rotation);
   display.width = Math.min(MAX_VIEWPORT_W, window.innerWidth - 48);
   display.height = Math.min(MAX_VIEWPORT_H, Math.round(window.innerHeight * 0.6));
-  state.minScale = Math.min(1, display.width / state.full.width, display.height / state.full.height);
-  state.view = { scale: state.minScale, x: 0, y: 0 };
+  active.minScale = Math.min(1, display.width / active.full.width, display.height / active.full.height);
+  active.view = { scale: active.minScale, x: 0, y: 0 };
   updateViewOffsets();
-  if (!preserveDetections) {
-    state.detections = [];
-    state.selectedId = null;
-  }
-  state.draftBox = null;
-  state.hoverDeleteId = null;
+  active.draftBox = null;
+  active.hoverDeleteId = null;
   updateInfoLine();
   redraw();
 }
 
-// Info-line text: filename (if known), resolution, rotation, zoom. Shared by
-// updateInfoLine() and setStatusMessage(), which prepends it to a message.
+// Info-line text: filename (if known), resolution, rotation, zoom, for the
+// active image. Shared by updateInfoLine() and setStatusMessage(), which
+// prepends it to a message.
 function infoLine() {
-  if (!state.full) return "";
-  const name = state.fileName ? `${state.fileName} · ` : "";
-  return `${name}${state.full.width}×${state.full.height}px · rotation ${state.rotation}° · zoom ${Math.round(state.view.scale * 100)}%`;
+  const active = state.active;
+  if (!active?.full) return "";
+  const name = active.fileName ? `${active.fileName} · ` : "";
+  return `${name}${active.full.width}×${active.full.height}px · rotation ${active.rotation}° · zoom ${Math.round(active.view.scale * 100)}%`;
 }
 
 // Refreshes the info portion of the status line, called on every
@@ -229,7 +242,14 @@ function setStatusMessage(msg) {
 function redraw() {
   redrawCanvas();
   renderResultsList();
-  persistState({ rotation: state.rotation, detections: state.detections });
+  const active = state.active;
+  // sha256 is null for the brief window between an image being loaded and its
+  // hash resolving (see the file input handler); nothing to key a save on yet.
+  if (active?.sha256) {
+    persistLabel(active.sha256, {
+      filename: active.fileName, rotation: active.rotation, detections: active.detections,
+    }).catch(() => setStatusMessage("Could not save — storage may be full"));
+  }
 }
 
 
@@ -250,44 +270,52 @@ function applyEditedBox(detection, newBox) {
 
 // Detections whose bounding rects intersect — likely duplicate reads of the
 // same physical label. Keyed by detection id -> the other overlapping boxes'
-// display numbers (1-based), for the list warning.
+// display numbers (1-based), for the list warning. Empty when nothing is
+// loaded (state.active is null).
 function computeOverlapWarnings() {
   const warnings = new Map();
-  for (let i = 0; i < state.detections.length; i++) {
-    const boundsI = boundsOf(state.detections[i].box);
-    for (let j = i + 1; j < state.detections.length; j++) {
-      if (overlapArea(boundsI, boundsOf(state.detections[j].box)) <= 0) continue;
-      if (!warnings.has(state.detections[i].id)) warnings.set(state.detections[i].id, []);
-      if (!warnings.has(state.detections[j].id)) warnings.set(state.detections[j].id, []);
-      warnings.get(state.detections[i].id).push(j + 1);
-      warnings.get(state.detections[j].id).push(i + 1);
+  const detections = state.active?.detections ?? [];
+  for (let i = 0; i < detections.length; i++) {
+    const boundsI = boundsOf(detections[i].box);
+    for (let j = i + 1; j < detections.length; j++) {
+      if (overlapArea(boundsI, boundsOf(detections[j].box)) <= 0) continue;
+      if (!warnings.has(detections[i].id)) warnings.set(detections[i].id, []);
+      if (!warnings.has(detections[j].id)) warnings.set(detections[j].id, []);
+      warnings.get(detections[i].id).push(j + 1);
+      warnings.get(detections[j].id).push(i + 1);
     }
   }
   return warnings;
 }
 
-// Shared cleanup for any bulk removal: drop the ids from `detections` and
-// clear any selection/hover state that would otherwise dangle on a removed id.
+// Shared cleanup for any bulk removal on the active image: drop the ids from
+// `detections` and clear any selection/hover state that would otherwise
+// dangle on a removed id. Only ever called with a non-empty idsToRemove that
+// pruneOverlapping()/pruneEmpty() derived from the active image's own
+// detections, so state.active is guaranteed non-null here.
 function removeDetections(idsToRemove) {
   if (idsToRemove.size === 0) return 0;
-  state.detections = state.detections.filter((d) => !idsToRemove.has(d.id));
-  if (state.selectedId != null && idsToRemove.has(state.selectedId)) state.selectedId = null;
-  if (state.hoverDeleteId != null && idsToRemove.has(state.hoverDeleteId)) state.hoverDeleteId = null;
-  if (state.hoverBoxId != null && idsToRemove.has(state.hoverBoxId)) state.hoverBoxId = null;
+  const active = state.active;
+  active.detections = active.detections.filter((d) => !idsToRemove.has(d.id));
+  if (active.selectedId != null && idsToRemove.has(active.selectedId)) active.selectedId = null;
+  if (active.hoverDeleteId != null && idsToRemove.has(active.hoverDeleteId)) active.hoverDeleteId = null;
+  if (active.hoverBoxId != null && idsToRemove.has(active.hoverBoxId)) active.hoverBoxId = null;
   return idsToRemove.size;
 }
 
 function pruneOverlapping() {
-  const keptIds = new Set(selectNonOverlapping(state.detections).map((d) => d.id));
-  const removedIds = new Set(state.detections.filter((d) => !keptIds.has(d.id)).map((d) => d.id));
+  const detections = state.active?.detections ?? [];
+  const keptIds = new Set(selectNonOverlapping(detections).map((d) => d.id));
+  const removedIds = new Set(detections.filter((d) => !keptIds.has(d.id)).map((d) => d.id));
   return removeDetections(removedIds);
 }
 
 // "Empty" = recognition was tried and found nothing (dark-red dashed).
 // Never-tried boxes (gray dashed) are left alone.
 function pruneEmpty() {
+  const detections = state.active?.detections ?? [];
   const emptyIds = new Set(
-    state.detections.filter((d) => d.score == null && d.attempted).map((d) => d.id),
+    detections.filter((d) => d.score == null && d.attempted).map((d) => d.id),
   );
   return removeDetections(emptyIds);
 }
@@ -295,9 +323,10 @@ function pruneEmpty() {
 // Reachable via Delete/Backspace (interaction.js); the canvas and list delete-X
 // hotspots remove directly rather than through this.
 function deleteSelected() {
-  if (state.selectedId == null) return;
-  state.detections = state.detections.filter((d) => d.id !== state.selectedId);
-  state.selectedId = null;
+  const active = state.active;
+  if (!active || active.selectedId == null) return;
+  active.detections = active.detections.filter((d) => d.id !== active.selectedId);
+  active.selectedId = null;
   updateButtons();
   redraw();
 }
@@ -309,16 +338,17 @@ function rotatePoint([x, y], delta, oldW, oldH) {
 }
 
 function rotate(delta) {
-  if (!state.img || state.scanAbortController) return;
-  const oldW = state.full.width;
-  const oldH = state.full.height;
-  state.detections = state.detections.map((d) => ({
+  const active = state.active;
+  if (!active?.img || state.scanAbortController) return;
+  const oldW = active.full.width;
+  const oldH = active.full.height;
+  active.detections = active.detections.map((d) => ({
     ...d,
     box: d.box.map((pt) => rotatePoint(pt, delta, oldW, oldH)),
   }));
-  state.rotation = (state.rotation + delta + 360) % 360;
-  thumbnails.clear(); // `full` is re-rendered, so every cached crop is stale
-  resetView({ preserveDetections: true });
+  active.rotation = (active.rotation + delta + 360) % 360;
+  thumbnails.clear(active.id); // this image's `full` is re-rendered; other images' caches stay valid
+  renderActiveView(); // recomputes full/view/minScale and calls redraw()
   updateButtons();
 }
 
@@ -326,7 +356,9 @@ function rotate(delta) {
 // ─── Button enablement ──────────────────────────────────────────────────────
 
 function updateButtons() {
-  const hasImage = !!state.img;
+  const active = state.active;
+  const hasImage = !!active?.img;
+  const detections = active?.detections ?? [];
   for (const b of [rotateLeftBtn, rotateRightBtn]) b.disabled = !hasImage || !!state.scanAbortController;
   // Disabled once a whole-photo scan is outstanding, so repeat clicks can't
   // re-tile and re-queue the same photo. Checks signal.aborted rather than
@@ -340,39 +372,33 @@ function updateButtons() {
   // bookkeeping (see recognizePendingBoxes()), so this can stay enabled and
   // just add to the shared queue rather than needing the same gating as
   // "OCR full photo".
-  recognizePendingBtn.disabled = !state.detections.some((d) => d.score == null && !d.attempted && !d.manual);
+  recognizePendingBtn.disabled = !detections.some((d) => d.score == null && !d.attempted && !d.manual);
   pruneOverlappingBtn.disabled = computeOverlapWarnings().size === 0;
-  pruneEmptyBtn.disabled = !state.detections.some((d) => d.score == null && d.attempted);
+  pruneEmptyBtn.disabled = !detections.some((d) => d.score == null && d.attempted);
   // Enabled when any box carries usable text -- an OCR read or a hand-entered
   // label (which has no score). A blank manual label ("no label here") doesn't count.
-  goToGuideBtn.disabled = !state.detections.some((d) => d.text && d.text.trim());
-  clearBtn.disabled = !hasImage && state.detections.length === 0;
-  clearBoxesBtn.disabled = state.detections.length === 0;
+  goToGuideBtn.disabled = !detections.some((d) => d.text && d.text.trim());
+  clearBtn.disabled = !hasImage && detections.length === 0;
+  clearBoxesBtn.disabled = detections.length === 0;
 }
 
 
-// ─── Session lifecycle ──────────────────────────────────────────────────────
+// ─── Batch lifecycle ─────────────────────────────────────────────────────────
 
+// Today's "Clear" button: wipes the current batch entirely, including these
+// images' ground truth. This is what PLAN.md's five-operation design calls
+// "Clear batch" -- kept under its original name/button for now; the other
+// four operations (Clear image / Drop image / Finish batch / Clear all) and
+// the "Clear ▾" menu are a follow-up step.
 async function clearSession() {
-  if (!state.img && state.detections.length === 0) return;
+  if (state.images.length === 0) return;
   if (!confirm("Clear the loaded photo and all boxes?")) return;
 
-  // Stop any in-flight scan against the session being wiped.
   if (state.scanAbortController) state.scanAbortController.abort();
 
-  state.img = null;
-  state.fileName = "";
-  state.full = null;
-  state.rotation = 0;
-  state.view = { scale: 1, x: 0, y: 0 };
-  state.minScale = 1;
-  state.detections = [];
-  state.nextId = 1;
-  state.selectedId = null;
-  state.draftBox = null;
-  state.hoverDeleteId = null;
-  state.hoverBoxId = null;
-  thumbnails.clear();
+  const shaList = state.images.filter((img) => img.sha256).map((img) => img.sha256);
+  state.images = [];
+  state.activeId = null;
 
   fileInput.value = "";
   ctx.clearRect(0, 0, display.width, display.height);
@@ -381,66 +407,83 @@ async function clearSession() {
   updateButtons();
   renderResultsList();
 
-  await clearStoredSession();
+  await clearStoredBatch();
+  if (shaList.length > 0) await deleteLabels(shaList).catch(() => {});
 }
 
-// Narrower than clearSession(): drops every box (drawn, pending, or
-// recognized) but keeps the loaded photo.
+// Today's "Clear boxes" button: drops every box on the active image (drawn,
+// pending, or recognized) but keeps it loaded. PLAN.md's "Clear image".
 function clearDetections() {
-  if (state.detections.length === 0) return;
+  const active = state.active;
+  if (!active || active.detections.length === 0) return;
   if (!confirm("Clear all boxes? The loaded photo is kept.")) return;
 
-  // Stop any in-flight scan against the box list being wiped. `img` stays
-  // set here, so suppressScanSummary is what keeps the worker from posting a
-  // completion summary over the now-empty list.
+  // Stop any in-flight scan against the box list being wiped. The image stays
+  // loaded here, so suppressScanSummary is what keeps the worker from posting
+  // a completion summary over the now-empty list.
   if (state.scanAbortController) {
     state.suppressScanSummary = true;
     state.scanAbortController.abort();
   }
 
-  state.detections = [];
-  state.nextId = 1;
-  state.selectedId = null;
-  state.draftBox = null;
-  state.hoverDeleteId = null;
-  state.hoverBoxId = null;
-  thumbnails.clear();
+  active.detections = [];
+  active.nextId = 1;
+  active.selectedId = null;
+  active.draftBox = null;
+  active.hoverDeleteId = null;
+  active.hoverBoxId = null;
+  thumbnails.clear(active.id);
   state.lastStatusMessage = null; // don't let a stale message survive the clear
 
   updateInfoLine(); // re-renders the (now blank) status line
   updateButtons();
-  redraw();
+  redraw(); // persists the now-empty detections, the same as any other edit
 }
 
-// On boot, restore a previously-remembered image + boxes, if any. Runs
-// unawaited; nothing else on the page depends on it finishing.
-async function restoreSession() {
-  const stored = await loadSession();
+// On boot, restore a previously-remembered batch, if any. Runs unawaited;
+// nothing else on the page depends on it finishing.
+async function restoreBatch() {
+  const stored = await loadBatch();
   if (!stored) return; // storage unreadable; session-store.js has logged it
-  const { blob, state: saved } = stored;
-  if (!blob) return; // nothing saved yet
+  if (stored.images.length === 0) return; // nothing saved yet
 
-  const url = URL.createObjectURL(blob);
-  const nextImg = new Image();
-  const loaded = await new Promise((resolve) => {
-    nextImg.onload = () => resolve(true);
-    nextImg.onerror = () => resolve(false);
-    nextImg.src = url;
-  });
-  URL.revokeObjectURL(url);
-  if (!loaded) return;
+  const loaded = await Promise.all(stored.images.map(async (entry) => {
+    // Bytes missing (e.g. evicted under storage pressure -- shouldn't happen
+    // given batch images are capped to one batch's worth, but not impossible):
+    // its ground truth is untouched in the ledger, it just can't be shown
+    // without re-selecting the file, so it's dropped from the restored batch
+    // rather than shown broken.
+    if (!entry.blob) return null;
+    const url = URL.createObjectURL(entry.blob);
+    const img = new Image();
+    const ok = await new Promise((resolve) => {
+      img.onload = () => resolve(true);
+      img.onerror = () => resolve(false);
+      img.src = url;
+    });
+    URL.revokeObjectURL(url);
+    if (!ok) return null;
+    return newImageEntry({
+      id: state.nextImageId++,
+      sha256: entry.sha256,
+      fileName: entry.filename,
+      img,
+      rotation: entry.rotation,
+      detections: entry.detections,
+    });
+  }));
 
-  state.img = nextImg;
-  state.fileName = blob.name || ""; // set before resetView() so its info-line update includes it
-  state.rotation = saved?.rotation || 0;
-  // Sessions saved before thumbnails moved into thumbnailCache carry a data
-  // URL per box; drop those fields rather than persisting them onward.
-  state.detections = (saved?.detections || []).map(({ _thumbKey, _thumbUrl, ...d }) => d);
-  state.nextId = state.detections.reduce((max, d) => Math.max(max, d.id), 0) + 1;
-  resetView({ preserveDetections: true });
+  state.images = loaded.filter((img) => img != null);
+  if (state.images.length === 0) return;
+
+  const activeMatch = state.images.find((img) => img.sha256 === stored.active);
+  state.activeId = (activeMatch ?? state.images[0]).id;
+  renderActiveView(); // recomputes full/view/minScale and calls redraw()
   updateButtons();
-  const label = state.fileName ? `"${state.fileName}"` : "previous scan";
-  setStatusMessage(`Restored ${label} (${state.detections.length} box(es))`);
+  const label = state.images.length === 1 && state.images[0].fileName
+    ? `"${state.images[0].fileName}"`
+    : `${state.images.length} image(s)`;
+  setStatusMessage(`Restored ${label} (${state.active.detections.length} box(es))`);
 }
 
 
@@ -503,7 +546,7 @@ const scan = createScan({
 
 // The results list lives in results-list.js; bind it to the shared state, the
 // list element, and the callbacks its rows trigger, and rebind renderResultsList
-// by name (redraw() and clearSession() call it).
+// by name (redraw() and the batch-lifecycle functions call it).
 const { renderResultsList } = createResultsList({
   state,
   resultsEl,
@@ -537,37 +580,57 @@ pruneEmptyBtn.addEventListener("click", () => {
   redraw();
 });
 
-fileInput.addEventListener("change", () => {
+// Single-file for now: a batch of exactly one, running on the new schema.
+// Multi-file selection, folding the outgoing batch into the ledger, and
+// reattaching ground truth for images the ledger already knows about are a
+// follow-up step (PLAN.md, "Multi-image workflow").
+fileInput.addEventListener("change", async () => {
   const file = fileInput.files[0];
   if (!file) return;
-  // Stop any in-flight scan against the photo being replaced.
   if (state.scanAbortController) state.scanAbortController.abort();
+
   const url = URL.createObjectURL(file);
-  const nextImg = new Image();
-  nextImg.onload = () => {
-    state.img = nextImg;
-    state.fileName = file.name; // set before resetView() so its info-line update includes it
-    state.rotation = 0;
-    state.detections = [];
-    state.selectedId = null;
-    thumbnails.clear();
-    state.lastStatusMessage = null; // new photo: don't carry over the previous one's status
-    resetView();
-    updateButtons();
-    URL.revokeObjectURL(url);
-    persistImage(file); // new photo: overwrite whatever session was remembered before
-  };
-  nextImg.src = url;
+  const img = new Image();
+  const ok = await new Promise((resolve) => {
+    img.onload = () => resolve(true);
+    img.onerror = () => resolve(false);
+    img.src = url;
+  });
+  URL.revokeObjectURL(url);
+  if (!ok) return;
+
+  const image = newImageEntry({
+    id: state.nextImageId++,
+    sha256: null, // filled in below once hashing resolves
+    fileName: file.name,
+    img,
+    rotation: 0,
+    detections: [],
+  });
+  state.images = [image]; // replaces whatever batch was loaded before
+  state.activeId = image.id;
+  state.lastStatusMessage = null; // new photo: don't carry over the previous one's status
+  renderActiveView(); // recomputes full/view/minScale and calls redraw()
+  updateButtons();
+
+  const sha256 = await sha256Hex(file);
+  image.sha256 = sha256;
+  await replaceImages([{ sha256, blob: file }]);
+  await persistBatchMeta({ order: [sha256], active: sha256 });
+  await persistLabel(sha256, { filename: image.fileName, rotation: image.rotation, detections: image.detections });
 });
 
-// Hands every labelled detection's text to guide.js via sessionStorage -- both
-// OCR reads and hand-entered labels (a blank manual "no label" box carries no
-// text and is skipped). Not deduped: a real board pile can hold several copies
-// of the same board, and guide.js counts quantities to allocate complete sets.
-// Use "Prune overlapping" first if a region got detected more than once by
-// mistake; every box left after that counts as one real board.
+// Hands every labelled detection's text (of the active image) to guide.js via
+// sessionStorage -- both OCR reads and hand-entered labels (a blank manual
+// "no label" box carries no text and is skipped). Not deduped: a real board
+// pile can hold several copies of the same board, and guide.js counts
+// quantities to allocate complete sets. Use "Prune overlapping" first if a
+// region got detected more than once by mistake; every box left after that
+// counts as one real board. Unioning across every image in the batch, not
+// just the active one, is a follow-up step (PLAN.md, "Multi-image workflow").
 goToGuideBtn.addEventListener("click", () => {
-  const numbers = state.detections
+  const detections = state.active?.detections ?? [];
+  const numbers = detections
     .filter((d) => d.text && d.text.trim())
     .map((d) => d.text.trim());
   if (numbers.length === 0) return;
@@ -575,4 +638,4 @@ goToGuideBtn.addEventListener("click", () => {
   location.href = "guide.html";
 });
 
-restoreSession();
+restoreBatch();

@@ -153,20 +153,26 @@ describe("canvas interaction", { skip: chromePath ? false : "no Chrome found" },
     async () => {
       await drawBox();
       // Simulate a prior recognition directly in the page: applyEditedBox()
-      // isn't exported, so this writes the same fields rather than calling it.
+      // isn't exported, so this writes the same fields rather than calling it,
+      // into the active image's persisted label entry.
       await page.evaluate(`
         (async () => {
-          const req = indexedDB.open("field-guide-scan", 1);
+          const req = indexedDB.open("field-guide-scan", 2);
           await new Promise((resolve) => { req.onsuccess = resolve; });
           const db = req.result;
-          const tx = db.transaction("session", "readwrite");
-          const store = tx.objectStore("session");
-          const g = store.get("state");
+          const active = await new Promise((resolve, reject) => {
+            const g = db.transaction("batch", "readonly").objectStore("batch").get("current");
+            g.onsuccess = () => resolve(g.result.active);
+            g.onerror = () => reject(g.error);
+          });
+          const tx = db.transaction("labels", "readwrite");
+          const store = tx.objectStore("labels");
+          const g = store.get(active);
           await new Promise((resolve) => { g.onsuccess = resolve; });
-          const state = g.result;
-          state.detections[0].text = "M7270";
-          state.detections[0].score = 0.9;
-          store.put(state, "state");
+          const label = g.result;
+          label.detections[0].text = "M7270";
+          label.detections[0].score = 0.9;
+          store.put(label, active);
           await new Promise((resolve) => { tx.oncomplete = resolve; });
         })()
       `);

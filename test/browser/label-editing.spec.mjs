@@ -105,20 +105,27 @@ describe("hand-entered labels", { skip: chromePath ? false : "no Chrome found" }
       "the box must survive -- Backspace was consumed by the input, not the delete handler");
   });
 
-  // Puts an OCR result on the drawn box by writing the persisted session and
-  // reloading, since the scan path isn't exercised here.
+  // Puts an OCR result on the drawn box by writing the active image's
+  // persisted label entry and reloading, since the scan path isn't exercised
+  // here.
   async function seedRecognized(text, score) {
     await page.evaluate(`(async () => {
-      const req = indexedDB.open("field-guide-scan", 1);
+      const req = indexedDB.open("field-guide-scan", 2);
       await new Promise((r) => { req.onsuccess = r; });
-      const tx = req.result.transaction("session", "readwrite");
-      const store = tx.objectStore("session");
-      const g = store.get("state");
+      const db = req.result;
+      const active = await new Promise((resolve, reject) => {
+        const g = db.transaction("batch", "readonly").objectStore("batch").get("current");
+        g.onsuccess = () => resolve(g.result.active);
+        g.onerror = () => reject(g.error);
+      });
+      const tx = db.transaction("labels", "readwrite");
+      const store = tx.objectStore("labels");
+      const g = store.get(active);
       await new Promise((r) => { g.onsuccess = r; });
-      const state = g.result;
-      state.detections[0].text = ${JSON.stringify(text)};
-      state.detections[0].score = ${score};
-      store.put(state, "state");
+      const label = g.result;
+      label.detections[0].text = ${JSON.stringify(text)};
+      label.detections[0].score = ${score};
+      store.put(label, active);
       await new Promise((r) => { tx.oncomplete = r; });
     })()`);
     await page.goto(`${origin}/ocr.html`);

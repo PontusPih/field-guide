@@ -1,16 +1,18 @@
-// The results list: one row per detection. A row is a thumbnail, a compact
-// status glyph + label, an optional overlap warning, and a delete button.
-// Actions are overloaded onto the row's own elements to keep it uncluttered:
-// clicking the thumbnail zooms to the box, clicking the label edits it by hand,
-// clicking elsewhere on the row selects it. Rebuilt wholesale from
-// state.detections on every redraw() -- the DOM is cheap at these counts, and a
-// full rebuild keeps the list a pure function of state.
+// The results list: one row per detection *of the active image* (see PLAN.md,
+// "Multi-image workflow" -- state.active is whichever image in the batch is
+// currently being viewed/edited). A row is a thumbnail, a compact status
+// glyph + label, an optional overlap warning, and a delete button. Actions are
+// overloaded onto the row's own elements to keep it uncluttered: clicking the
+// thumbnail zooms to the box, clicking the label edits it by hand, clicking
+// elsewhere on the row selects it. Rebuilt wholesale from state.active on
+// every redraw() -- the DOM is cheap at these counts, and a full rebuild keeps
+// the list a pure function of state.
 //
 // DOM-imperative: builds rows and wires their events; thumbnail image work
 // lives in thumbnails.js. createResultsList() binds it to the shared state,
 // the <ul> element, and the callbacks its rows trigger (select/zoom/delete all
-// re-render), and returns { renderResultsList }; ocr.js's redraw() and
-// clearSession() call it by name.
+// re-render), and returns { renderResultsList }; ocr.js's redraw() and the
+// Clear-family operations call it by name.
 
 import { colorFor, glyphFor, listLabelFor } from "./detections.js";
 
@@ -76,12 +78,15 @@ export function createResultsList({
 
   function renderResultsList() {
     resultsEl.innerHTML = "";
+    const active = state.active;
+    if (!active) return; // no image loaded: an empty list is correct
+
     const overlapWarnings = computeOverlapWarnings();
-    state.detections.forEach((d, i) => {
+    active.detections.forEach((d, i) => {
       const li = document.createElement("li");
       li.className = "result-row";
       li.style.cursor = "pointer";
-      li.style.fontWeight = d.id === state.selectedId ? "bold" : "normal";
+      li.style.fontWeight = d.id === active.selectedId ? "bold" : "normal";
 
       // Row index in its own fixed-width column, left of the thumbnail, so it
       // reads as an index rather than part of the detected text. Sized for two
@@ -97,7 +102,7 @@ export function createResultsList({
       thumb.title = "Zoom to this box";
       thumb.addEventListener("click", (e) => {
         e.stopPropagation();
-        state.selectedId = d.id;
+        active.selectedId = d.id;
         zoomToBox(d);
         updateButtons();
         redraw();
@@ -150,10 +155,10 @@ export function createResultsList({
       delBtn.textContent = "✕"; // ✕
       delBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        state.detections = state.detections.filter((x) => x.id !== d.id);
-        if (state.selectedId === d.id) state.selectedId = null;
-        if (state.hoverDeleteId === d.id) state.hoverDeleteId = null;
-        if (state.hoverBoxId === d.id) state.hoverBoxId = null;
+        active.detections = active.detections.filter((x) => x.id !== d.id);
+        if (active.selectedId === d.id) active.selectedId = null;
+        if (active.hoverDeleteId === d.id) active.hoverDeleteId = null;
+        if (active.hoverBoxId === d.id) active.hoverBoxId = null;
         updateButtons();
         redraw();
       });
@@ -161,19 +166,19 @@ export function createResultsList({
       icons.append(delBtn);
       li.append(num, thumb, info, icons);
       li.addEventListener("click", () => {
-        state.selectedId = state.selectedId === d.id ? null : d.id;
+        active.selectedId = active.selectedId === d.id ? null : d.id;
         updateButtons();
         redraw();
       });
       // Hovering a row reveals that box's full label on the image, mirroring
       // canvas hover. redrawCanvas(), not redraw(): see redrawCanvas().
       li.addEventListener("mouseenter", () => {
-        state.hoverBoxId = d.id;
+        active.hoverBoxId = d.id;
         redrawCanvas();
       });
       li.addEventListener("mouseleave", () => {
-        if (state.hoverBoxId === d.id) {
-          state.hoverBoxId = null;
+        if (active.hoverBoxId === d.id) {
+          active.hoverBoxId = null;
           redrawCanvas();
         }
       });

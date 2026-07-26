@@ -7,11 +7,20 @@
 // would just 503). Boxes can be added mid-scan; the worker picks them up on its
 // next iteration.
 //
+// A scan targets whichever image is active when it starts (state.active),
+// for that scan's whole lifetime -- ensureWorkerRunning() captures it once, so
+// the scan stays correct even though the queue/worker/overlay below (scanQueue,
+// tileOverlay, pendingPlaceholders, scanAbortController, suppressScanSummary)
+// are deliberately global, not per-image (see PLAN.md, "Multi-image workflow":
+// v1 keeps scanning exclusive to one image at a time, and the image-switcher
+// UI disables switching while scanAbortController is set, so state.active
+// cannot actually change mid-scan).
+//
 // Holds no module state of its own: createScan() binds the queue and worker
 // to the shared `state` object, the render callbacks they trigger, and the
 // OCR/tiling config, and returns the three entry points ocr.js wires to
-// buttons. `state.full`, `document`, `fetch`, and `AbortController` are the
-// browser/globals this relies on; the rest arrives through the params.
+// buttons. `document`, `fetch`, and `AbortController` are the browser/globals
+// this relies on; the rest arrives through the params.
 
 import { tileGrid } from "./tiling.js";
 import { boundsOf } from "./geometry.js";
@@ -29,15 +38,15 @@ export function createScan({
   computeOverlapWarnings,
 }) {
 
-  // Crops [x0,y0,x1,y1] (full-image coordinates) from `full` and posts it to
-  // /ocr, returning results translated back into full-image space.
-  async function recognizeTile([x0, y0, x1, y1], signal) {
+  // Crops [x0,y0,x1,y1] (full-image coordinates) from the scan's target image
+  // and posts it to /ocr, returning results translated back into full-image space.
+  async function recognizeTile(active, [x0, y0, x1, y1], signal) {
     const tw = x1 - x0;
     const th = y1 - y0;
     const cropCanvas = document.createElement("canvas");
     cropCanvas.width = tw;
     cropCanvas.height = th;
-    cropCanvas.getContext("2d").drawImage(state.full, x0, y0, tw, th, 0, 0, tw, th);
+    cropCanvas.getContext("2d").drawImage(active.full, x0, y0, tw, th, 0, 0, tw, th);
     const blob = await new Promise((resolve) => cropCanvas.toBlob(resolve, "image/png"));
     // toBlob yields null if the canvas can't be encoded; posting that would send
     // an empty body and read as a tile that found nothing.
@@ -57,7 +66,7 @@ export function createScan({
     }));
   }
 
-  // Splits the (x0,y0)-(x0+w,y0+h) region of `full` into tile-sized crops in
+  // Splits the (x0,y0)-(x0+w,y0+h) region of an image into tile-sized crops in
   // full-image coordinates (PLAN.md, "Tiled scanning for large images").
   // Shared by the whole-photo "OCR full photo" button and per-drawn-box recognition;
   // keeps every upload under the backend's OCR_MAX_DIMENSION limit.
@@ -96,8 +105,9 @@ export function createScan({
   // Whole-photo scan: the full image is just a region that covers everything,
   // tiled and queued the same way a drawn box is.
   function runFullScan() {
-    if (!state.full) return;
-    for (const box of tileBoxesFor(0, 0, state.full.width, state.full.height)) {
+    const active = state.active;
+    if (!active?.full) return;
+    for (const box of tileBoxesFor(0, 0, active.full.width, active.full.height)) {
       enqueueTile({ box, kind: "auto" });
     }
     redrawCanvas();
@@ -117,9 +127,11 @@ export function createScan({
   // it's tiled the same way the whole photo is. Each pending box gets a
   // placeholder entry so its tiles can be reassembled once all report back.
   function recognizePendingBoxes() {
+    const active = state.active;
+    if (!active) return;
     // Skips boxes already queued: one placeholder entry per box, so a second
     // click can't overwrite bookkeeping the first click's tiles still refer to.
-    const pending = state.detections.filter(
+    const pending = active.detections.filter(
       (d) => d.score == null && !d.attempted && !d.manual && !state.pendingPlaceholders.has(d.id),
     );
     if (pending.length === 0) return;
@@ -129,8 +141,8 @@ export function createScan({
       const margin = marginFor(bounds);
       const x0 = Math.max(0, Math.floor(bounds.minX - margin));
       const y0 = Math.max(0, Math.floor(bounds.minY - margin));
-      const x1 = Math.min(state.full.width, Math.ceil(bounds.maxX + margin));
-      const y1 = Math.min(state.full.height, Math.ceil(bounds.maxY + margin));
+      const x1 = Math.min(active.full.width, Math.ceil(bounds.maxX + margin));
+      const y1 = Math.min(active.full.height, Math.ceil(bounds.maxY + margin));
       const w = x1 - x0;
       const h = y1 - y0;
       const gotUpscaleBoost = Math.min(w, h) < RAPIDOCR_UPSCALE_SHORT_SIDE;
@@ -157,6 +169,9 @@ export function createScan({
   // inspectable. The completion message points at it when there's cleanup to do.
   async function ensureWorkerRunning() {
     if (state.scanAbortController) return;
+    // Captured once: this scan operates on whichever image was active when it
+    // started, for its whole lifetime -- see the module comment above.
+    const active = state.active;
     state.scanAbortController = new AbortController();
     const signal = state.scanAbortController.signal;
     updateButtons();
@@ -180,7 +195,7 @@ export function createScan({
 
         let found;
         try {
-          found = await recognizeTile(item.box, signal);
+          found = await recognizeTile(active, item.box, signal);
         } catch (err) {
           if (err.name === "AbortError" || signal.aborted) break;
           // A per-tile failure counts as "found nothing", so one bad tile
@@ -199,9 +214,9 @@ export function createScan({
         redrawCanvas();
 
         if (item.kind === "auto") {
-          const newDetections = found.map((d) => ({ id: state.nextId++, ...d, source: "auto" }));
+          const newDetections = found.map((d) => ({ id: active.nextId++, ...d, source: "auto" }));
           autoFoundCount += newDetections.length;
-          state.detections = [...state.detections, ...newDetections];
+          active.detections = [...active.detections, ...newDetections];
           redraw();
           continue;
         }
@@ -228,11 +243,11 @@ export function createScan({
             manualEmptyCount++;
           }
         } else {
-          const newDetections = entry.found.map((d) => ({ id: state.nextId++, ...d, source: "manual" }));
+          const newDetections = entry.found.map((d) => ({ id: active.nextId++, ...d, source: "manual" }));
           manualFoundCount += newDetections.length;
-          const idx = state.detections.indexOf(entry.placeholder);
-          if (idx >= 0) state.detections.splice(idx, 1, ...newDetections);
-          if (state.selectedId != null && !state.detections.some((d) => d.id === state.selectedId)) state.selectedId = null;
+          const idx = active.detections.indexOf(entry.placeholder);
+          if (idx >= 0) active.detections.splice(idx, 1, ...newDetections);
+          if (active.selectedId != null && !active.detections.some((d) => d.id === active.selectedId)) active.selectedId = null;
         }
         redraw();
       }
@@ -257,18 +272,19 @@ export function createScan({
       for (const [placeholderId, entry] of state.pendingPlaceholders) {
         if (carriedPlaceholderIds.has(placeholderId)) continue;
         if (entry.found.length > 0) {
-          const newDetections = entry.found.map((d) => ({ id: state.nextId++, ...d, source: "manual" }));
-          const idx = state.detections.indexOf(entry.placeholder);
-          if (idx >= 0) state.detections.splice(idx, 1, ...newDetections);
+          const newDetections = entry.found.map((d) => ({ id: active.nextId++, ...d, source: "manual" }));
+          const idx = active.detections.indexOf(entry.placeholder);
+          if (idx >= 0) active.detections.splice(idx, 1, ...newDetections);
         }
         state.pendingPlaceholders.delete(placeholderId);
       }
       state.scanAbortController = null;
 
-      // Clear ran mid-scan (img null), or Clear boxes did (suppressScanSummary,
-      // since img stays set there) -- either way, don't post a stale summary
-      // over the clean state it just left behind.
-      if (state.img && !state.suppressScanSummary) {
+      // Clear ran mid-scan (the image itself is gone), or Clear image did
+      // (suppressScanSummary, since the image stays loaded there) -- either
+      // way, don't post a stale summary over the clean state it just left
+      // behind.
+      if (active.img && !state.suppressScanSummary) {
         const parts = [];
         if (autoFoundCount > 0) parts.push(`found ${autoFoundCount} box(es) from the full photo`);
         if (manualRegionCount > 0) {
