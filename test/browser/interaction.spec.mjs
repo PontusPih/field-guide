@@ -132,11 +132,42 @@ describe("canvas interaction", { skip: chromePath ? false : "no Chrome found" },
     assert.equal(await rowVisible(0), false,
       "row 1 should be scrolled out of view after row 20 was scrolled into view");
 
-    // Click box 1 directly on the canvas (not in the list).
-    await clickFrac(page, rect, boxCenters[0].x, boxCenters[0].y);
+    // Shrink the viewport (restored after) so #resultsPanel (max-height 650px)
+    // cannot possibly fit inside it -- at the suite's normal 1400x1000, the
+    // page never actually needs to scroll for the panel to be fully visible,
+    // so scrolling the page here wouldn't exercise anything. This is the
+    // exact scenario that exposed a real bug: native scrollIntoView() walks
+    // *every* scrollable ancestor, not just #resultsPanel, so it would drag
+    // the page's own scroll position along too if the row also needed that.
+    // Fixed by computing the delta and adjusting #resultsPanel's scrollTop
+    // directly (results-list.js) instead of calling scrollIntoView() at all.
+    await page.send("Emulation.setDeviceMetricsOverride",
+      { width: 1400, height: 400, deviceScaleFactor: 1, mobile: false });
+    try {
+      await page.evaluate(`window.scrollTo(0, 200); true`);
+      const pageScrollBefore = await page.evaluate(`window.scrollY`);
+      assert.ok(pageScrollBefore > 0, "test setup: the page itself should be scrolled");
 
-    assert.equal(await rowVisible(0), true,
-      "selecting box 1 on the canvas should scroll its results-list row into view");
+      // The resize/scroll above moved the canvas's on-screen position, so
+      // `rect` (captured in beforeEach, before either) is stale --
+      // getBoundingClientRect() is viewport-relative, and re-fetching it is
+      // what dragFrac/clickFrac's fractional coordinates need to still land
+      // on the right box. boxCenters (fractions of rect) stay valid as-is.
+      const shrunkRect = await stageRect(page);
+
+      // Click box 1 directly on the canvas (not in the list).
+      await clickFrac(page, shrunkRect, boxCenters[0].x, boxCenters[0].y);
+
+      assert.equal(await rowVisible(0), true,
+        "selecting box 1 on the canvas should scroll its results-list row into view");
+      assert.equal(await page.evaluate(`window.scrollY`), pageScrollBefore,
+        "selecting a box must not also scroll the whole page");
+    } finally {
+      // Later tests in this file share the same page/browser instance and
+      // assume the suite's normal viewport.
+      await page.send("Emulation.setDeviceMetricsOverride",
+        { width: 1400, height: 1000, deviceScaleFactor: 1, mobile: false });
+    }
   });
 
   test("dragging a selected box's corner handle resizes it, pinning the opposite corner",

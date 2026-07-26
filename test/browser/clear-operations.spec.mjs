@@ -90,6 +90,17 @@ describe("Clear-family operations", { skip: chromePath ? false : "no Chrome foun
       assert.equal(labels.length, 1, "only B should remain in the batch");
       assert.equal(labels[0].filename, "B.png");
 
+      // B was never the active image before this drop -- loading A+B together
+      // only computes A's offscreen `full` canvas (whichever image is active
+      // *at that instant* gets it; see PLAN.md). Confirms dropImage()'s
+      // switch to B correctly initializes it, the same gap switchActiveImage()
+      // had (see image-switcher.spec.mjs): before the fix, rotate() crashed
+      // with "active.full is null" on an image reached this way.
+      const errorsBeforeRotate = page.consoleErrors.length;
+      await page.evaluate(`document.getElementById("rotateLeft").click(); true`);
+      assert.equal(page.consoleErrors.length, errorsBeforeRotate,
+        "rotating B (reached via Drop image, never viewed before) must not throw");
+
       // A's ground truth is untouched even though it left the batch.
       const aStillLabeled = await page.evaluate(`
         new Promise((resolve, reject) => {

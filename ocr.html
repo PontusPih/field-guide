@@ -81,6 +81,24 @@
   .dropdown-menu button:hover:not(:disabled) { background: #eee; }
   .dropdown-menu button:disabled { color: var(--muted-text); cursor: default; }
 
+  /* Lists every image in the current batch as a row of chips (image-switcher.js);
+     empty (no visible height beyond the summary) when nothing is loaded. */
+  #imageSwitcherBar { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.5rem; flex-wrap: wrap; }
+  #imageSwitcher { display: flex; gap: 0.4rem; list-style: none; margin: 0; padding: 0; overflow-x: auto; flex: 1 1 auto; min-width: 0; }
+  #imageSwitcherSummary { color: var(--muted-text); font-size: 0.85rem; white-space: nowrap; }
+  .switcher-chip {
+    display: flex; align-items: center; gap: 0.35rem; padding: 0.25rem 0.5rem;
+    border: 1px solid #ccc; border-radius: var(--panel-radius); font-size: 0.85rem;
+    cursor: pointer; white-space: nowrap; flex-shrink: 0;
+  }
+  .switcher-chip.active { border-color: #3498db; border-width: 2px; font-weight: bold; }
+  .switcher-chip.disabled { cursor: default; opacity: 0.6; }
+  .switcher-name { max-width: 12rem; overflow: hidden; text-overflow: ellipsis; }
+  .switcher-count {
+    background: var(--panel-bg); border-radius: 999px; padding: 0 0.4rem;
+    font-size: 0.75rem; color: var(--muted-text);
+  }
+
   @media (prefers-color-scheme: dark) {
     #cheatsheet { border-color: #444; }
     #resultsPanel { border-color: #444; }
@@ -89,6 +107,7 @@
     .icon-btn:hover { background: #333; }
     .dropdown-menu { background: #1c1c1c; border-color: #444; }
     .dropdown-menu button:hover:not(:disabled) { background: #333; }
+    .switcher-chip { border-color: #444; }
   }
 </style>
 </head>
@@ -142,6 +161,10 @@
     </table>
   </details>
   <div id="status"></div>
+  <div id="imageSwitcherBar">
+    <ul id="imageSwitcher"></ul>
+    <span id="imageSwitcherSummary"></span>
+  </div>
   <div id="workspace">
     <canvas id="stage"></canvas>
     <div id="resultsPanel">

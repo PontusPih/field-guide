@@ -164,7 +164,9 @@ takes a newline list and counts quantities — so the work is in the data model 
 the merge. This is also the substrate for building `hasso/labels.json` ground truth
 (`groundtruth.md`) by hand-labeling many real photos, which is what surfaced the design below:
 labeling 221+ images meant confronting IndexedDB growth and vocabulary head-on before writing
-code. **Status: designed, not yet implemented.**
+code. **Status: implemented** (all six steps below landed and tested — 98 unit + 56 browser
+tests green). The one item not done is the further, tagged-provenance refinement to the guide
+handoff, noted in its own bullet below; everything else in this section describes what shipped.
 
 **Vocabulary.** An **image** is one loaded photo and its working state (what the earlier sketch
 called a "session" — renamed because `session-store.js`/"the session" already means something
@@ -339,11 +341,91 @@ ledger entry, no rework of anything above.
       race their internal `await`s. Fixed the same way: poll for the specific persisted change
       (the batch's new size, the ledger's emptiness) rather than asserting immediately.
       **Verified:** 98 unit + 49 browser tests green, run twice for stability.
-- [ ] Image-switcher UI: list the images in the current batch, pick which to view/edit
-      (disabled mid-scan), with a running "N boards across M images" summary.
-- [ ] Curate one combined list of found labels, each tagged with which image and the
-      coordinates within that image it came from; the handoff unions recognized text across
-      the whole batch.
+- [x] Image-switcher UI: new `image-switcher.js` (mirrors results-list.js's own pattern --
+      `createImageSwitcher({ state, listEl, summaryEl, switchTo })` → `{ renderImageSwitcher }`,
+      rebuilt wholesale on every render). A row of chips above `#workspace`, one per
+      `state.images` entry, active one highlighted; clicking a chip calls `switchActiveImage(id)`
+      (`ocr.js`), which changes only `state.activeId` and persists it (`persistBatchMeta`) --
+      deliberately not routed through `renderActiveView()`/`redraw()`, so switching never resets
+      the target image's own pan/zoom or re-persists its (unchanged) label. Switching is
+      disabled mid-scan at two independent layers: the switcher skips wiring a click handler for
+      any non-active chip while `state.scanAbortController` is set, and `switchActiveImage()`
+      itself guards the same condition -- v1 keeps scanning exclusive to the active image (see
+      scan.js), so the image a scan targets must not change underneath it. `renderImageSwitcher()`
+      folded into `redraw()` (board counts change as boxes are edited) plus the direct
+      `renderResultsList()` call sites it doesn't cover (`dropImage`/`emptyBatch`).
+      New `test/browser/image-switcher.spec.mjs` (4 tests): chips list every image with the
+      active one highlighted; clicking a chip switches (results list, canvas, and the persisted
+      `batch.active` all update); switching is refused mid-scan and works again once the scan
+      finishes; the "N board(s) across M image(s)" summary counts across the *whole* batch, not
+      just the active image (confirmed by loading a second, unlabelled image alongside a
+      labelled one and checking the board count doesn't move while the image count does).
+      Mutation-tested the scan-exclusivity guard specifically in `switchActiveImage()`
+      (`ocr.js`) -- the layer that actually matters, since removing the switcher's own
+      redundant check made no observable difference (defense in depth working as intended;
+      `ocr.js`'s guard alone is sufficient and is what the test was actually pinned against).
+      **A UI change surfaced an already-known bug and got it fixed as a side effect:** the new
+      chip bar adds enough page height that, at the test suite's viewport, the page itself now
+      needs to scroll for `#resultsPanel` to be fully visible -- exposing the "selecting a box
+      scrolls the whole page, not just the results list" bug filed earlier (see "Known
+      follow-ups" above) in a real test for the first time. Fixed now rather than deferred:
+      `results-list.js`'s scroll-into-view no longer calls the native, ancestor-walking
+      `li.scrollIntoView()`; it computes the row/panel `getBoundingClientRect()` delta and
+      adjusts `#resultsPanel.scrollTop` directly, which by construction cannot touch the page's
+      own scroll position. Getting the mutation test to actually discriminate fixed-from-broken
+      took two follow-up fixes of its own: the suite's normal 1400x1000 viewport is tall enough
+      that the page never needed to scroll regardless, so the first version of the test couldn't
+      tell the two apart (fixed by shrinking the viewport for just this test, restored after);
+      and doing that shrink mid-test moved the canvas's on-screen position, which made the
+      test's own click coordinates (captured against the pre-shrink layout) land in the wrong
+      place (fixed by re-fetching the canvas's bounding rect after the resize).
+      **Also reverted mid-task, on the author's say-so:** "Clear image" was briefly folded into
+      the "Clear ▾" menu during task 4 (see that entry) and restored as the standalone icon
+      button once the author found the menu placement less intuitive in practice.
+      **Verified:** 98 unit + 54 browser tests green, run twice for stability.
+      **A real bug found by the author testing the shipped feature, not by any test:** clicking
+      a chip for a never-before-active image showed a blank canvas, made "OCR full photo" a
+      silent no-op, and made rotate throw `active.full is null`. Root cause: loading several
+      files at once only computes the offscreen `full` canvas for whichever image is active
+      *at that instant* (`renderActiveView()`, called once by the batch-load flow) -- every
+      other image in the same batch starts with `full: null` and, before this fix, stayed that
+      way forever, since `switchActiveImage()` deliberately skips `renderActiveView()` (it would
+      otherwise reset a previously-viewed image's pan/zoom back to a fresh fit every time you
+      switched back to it). `dropImage()`'s switch to the next remaining image had the identical
+      gap. Fixed with `ensureActiveViewInitialized()`: a no-op if the newly-active image already
+      has `full` (preserves its view, as intended), otherwise runs `renderActiveView()` exactly
+      once -- the missing first-time case, not a change to the "don't reset an already-viewed
+      image" behavior. Deliberately lazy (computed on first switch-to, not eagerly for the whole
+      batch at load time): eager computation for every image in a large batch (`hasso/`'s 221)
+      would waste work on images the user may never look at.
+      New coverage: `image-switcher.spec.mjs` gained a test switching to a never-viewed image
+      and confirming rotate doesn't throw and "OCR full photo" actually enqueues a request (not a
+      silent no-op); `clear-operations.spec.mjs`'s existing Drop-image test (which already
+      exercised the identical path) gained the same rotate-doesn't-throw assertion. Both
+      mutation-tested by reverting `ensureActiveViewInitialized()` to a no-op, reproducing the
+      original bug exactly -- both new assertions failed as expected.
+      **Verified again:** 98 unit + 55 browser tests green.
+- [x] The handoff unions recognized text across the whole batch, not just the active image:
+      `goToGuideBtn`'s handler (`ocr.js`) changed from `state.active.detections` to
+      `state.images.flatMap((img) => img.detections)`, so labelling boards across several
+      photos and clicking "Handoff to identify" once sends all of them together.
+      `updateButtons()`'s enablement check for the button changed to match (enabled if *any*
+      image in the batch has a labelled box, not just the active one). This is a flat union of
+      text, matching the plain newline-list format `guide.js` has always consumed (even for a
+      single image, there was never per-entry provenance) -- it is not the richer, tagged
+      version below.
+      New test in `multi-image.spec.mjs`: seeds a labelled box directly into two images'
+      ledger entries, clicks the handoff, and reads `sessionStorage` in the same script that
+      does the click (before the real navigation to `guide.html` — which would otherwise race
+      `guide.js`'s own consumption/removal of that key) to confirm both images' text landed in
+      one union, not just the active image's. Mutation-tested: reverting the flatMap back to
+      `state.active.detections` fails the new test.
+      **Verified:** 98 unit + 56 browser tests green.
+- [ ] **Not done, a further refinement:** curate one combined list where each entry is tagged
+      with which image and the coordinates within that image it came from (the original ambition
+      for this bullet, before it was scoped down to "union the text"). Would need a richer
+      handoff payload than the plain newline list `guide.js` parses today, so it's a `guide.js`
+      change too, not just `ocr.js`'s. Not yet designed in detail.
 
 **Integration**
 - [x] Decide where this lives in the shipped app — `index.html` is now a landing page

@@ -184,12 +184,27 @@ export function createResultsList({
       });
       resultsEl.appendChild(li);
       // Selecting a box on the canvas should bring its row into view (e.g.
-      // clicking a box that's currently scrolled out of the visible list).
-      // "nearest" only moves the scroll position when the row isn't already
-      // visible, so this is a no-op for a click that originated in the list
-      // itself (already visible) or a redraw that leaves selection unchanged
-      // (a move/resize/label edit on the already-selected box).
-      if (d.id === active.selectedId) li.scrollIntoView({ block: "nearest", inline: "nearest" });
+      // clicking a box that's currently scrolled out of the visible list) --
+      // but only within #resultsPanel, the list's own scrollable container.
+      // Native li.scrollIntoView() would walk *every* scrollable ancestor,
+      // including the whole page, dragging the page's own scroll position
+      // along too if the row also needed that (a real bug this had -- see
+      // PLAN.md, "Known follow-ups"). Computing the delta via
+      // getBoundingClientRect() and applying it to scrollTop directly touches
+      // only #resultsPanel: a no-op when the row is already fully visible
+      // (a click that originated in the list itself, or a redraw that
+      // leaves selection unchanged), matching scrollIntoView's "nearest"
+      // semantics without its whole-ancestor-chain side effect.
+      if (d.id === active.selectedId) {
+        const container = resultsEl.parentElement;
+        const rowRect = li.getBoundingClientRect();
+        const containerRect = container.getBoundingClientRect();
+        if (rowRect.top < containerRect.top) {
+          container.scrollTop -= containerRect.top - rowRect.top;
+        } else if (rowRect.bottom > containerRect.bottom) {
+          container.scrollTop += rowRect.bottom - containerRect.bottom;
+        }
+      }
     });
   }
 

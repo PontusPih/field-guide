@@ -2,11 +2,12 @@
 // selecting several files at once loads them into one batch: hash every
 // file, reattach ground truth for one the ledger already knows about, purge
 // the outgoing batch's pixels (bounding storage to one batch's worth), and
-// leave the ledger itself untouched across the swap.
-//
-// No image-switcher UI exists yet (a follow-up step), so a loaded-but-not-
-// active image is only observable through IndexedDB directly -- see
-// fixtures.mjs's readAllLabels()/readImageStoreKeys().
+// leave the ledger itself untouched across the swap. Also covers the guide
+// handoff's union across the whole batch, the payoff of the feature -- the
+// image-switcher (image-switcher.spec.mjs) is what makes a loaded-but-not-
+// active image reachable through the UI; this file also reads it directly
+// through IndexedDB (readAllLabels()/readImageStoreKeys()) where that's
+// simpler than driving the switcher.
 //
 // Run: `npm run test:browser`
 
@@ -112,6 +113,51 @@ describe("multi-image batch loading", { skip: chromePath ? false : "no Chrome fo
         })
       `);
       assert.equal(stillLabeled, 1, "A's labels ledger entry should survive the batch change");
+    });
+
+  test("the guide handoff unions labelled text across every image in the batch, not just the active one",
+    async () => {
+      await loadSyntheticPhotos(page, [{ name: "a.png", text: "AAA" }, { name: "b.png", text: "BBB" }]);
+      const [aEntry, bEntry] = await readAllLabels(page);
+
+      // Seeds each image's ledger entry directly -- drawing/labeling through
+      // the UI is covered elsewhere; this test is specifically about the
+      // handoff's union, not how the labels got there.
+      await page.evaluate(`
+        (async () => {
+          const req = indexedDB.open("field-guide-scan", 2);
+          await new Promise((r) => { req.onsuccess = r; });
+          const tx = req.result.transaction("labels", "readwrite");
+          const store = tx.objectStore("labels");
+          store.put({ filename: "a.png", rotation: 0, detections: [
+            { id: 1, box: [[0, 0], [10, 0], [10, 10], [0, 10]], text: "M8295", score: 0.9, source: "auto" },
+          ] }, ${JSON.stringify(aEntry.sha256)});
+          store.put({ filename: "b.png", rotation: 0, detections: [
+            { id: 1, box: [[0, 0], [10, 0], [10, 10], [0, 10]], text: "L0002", score: 0.85, source: "auto" },
+          ] }, ${JSON.stringify(bEntry.sha256)});
+          await new Promise((r) => { tx.oncomplete = r; });
+        })()
+      `);
+      // Reload so ocr.js's in-memory state.images picks up both seeded labels.
+      await page.goto(`${origin}/ocr.html`);
+      await page.waitFor(`!!document.getElementById("runOcr")`, "app boot");
+      await page.waitFor(`!document.getElementById("goToGuide").disabled`, "handoff enabled");
+
+      // goToGuideBtn's handler writes sessionStorage then navigates to
+      // guide.html, which consumes (removes) that key on its own boot -- so
+      // reading it *after* navigation would race guide.js and likely see it
+      // already gone. click() runs the whole handler synchronously before the
+      // browser acts on the location.href assignment, so reading
+      // sessionStorage in the same script, right after the click, reliably
+      // sees the value this click just wrote.
+      const handoff = await page.evaluate(`
+        (() => {
+          document.getElementById("goToGuide").click();
+          return sessionStorage.getItem("fieldGuideScan");
+        })()
+      `);
+      assert.equal(handoff, "M8295\nL0002",
+        "the handoff should include b.png's label even though a.png is the active image");
     });
 
   test("no page errors were logged across any of the above", () => {

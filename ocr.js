@@ -43,6 +43,7 @@ import { createCanvasView } from "./canvas-view.js";
 import { createThumbnailCache } from "./thumbnails.js";
 import { createResultsList } from "./results-list.js";
 import { createInteraction } from "./interaction.js";
+import { createImageSwitcher } from "./image-switcher.js";
 
 
 // ─── Config and constants ───────────────────────────────────────────────────
@@ -121,6 +122,8 @@ const clearAllBtn = document.getElementById("clearAll");
 const goToGuideBtn = document.getElementById("goToGuide");
 const statusEl = document.getElementById("status");
 const resultsEl = document.getElementById("results");
+const imageSwitcherEl = document.getElementById("imageSwitcher");
+const imageSwitcherSummaryEl = document.getElementById("imageSwitcherSummary");
 
 
 // ─── Shared state ───────────────────────────────────────────────────────────
@@ -210,6 +213,22 @@ function renderActiveView() {
   redraw();
 }
 
+// Computes the active image's `full`/view the first time it's actually
+// displayed, if nothing has done so yet. Loading a batch of several files
+// only calls renderActiveView() for the one that's active immediately after
+// loading (state.active, at that instant) -- every other image in the same
+// batch starts with `full: null` and stays that way until switched to.
+// switchActiveImage()/dropImage() deliberately don't call renderActiveView()
+// unconditionally (that would reset a previously-viewed image's pan/zoom
+// back to a fresh fit-to-viewport every time you switch back to it) -- this
+// is the lazy first-time case that skips-then-fills the gap instead: a
+// harmless no-op for an image that's already been displayed at least once
+// (its `full` is already set), and exactly renderActiveView()'s job the
+// first time it's actually shown.
+function ensureActiveViewInitialized() {
+  if (state.active && !state.active.full) renderActiveView();
+}
+
 // Info-line text: filename (if known), resolution, rotation, zoom, for the
 // active image. Shared by updateInfoLine() and setStatusMessage(), which
 // prepends it to a message.
@@ -248,6 +267,7 @@ function setStatusMessage(msg) {
 function redraw() {
   redrawCanvas();
   renderResultsList();
+  renderImageSwitcher(); // board counts change as boxes are edited/recognized
   const active = state.active;
   // sha256 is null for the brief window between an image being loaded and its
   // hash resolving (see the file input handler); nothing to key a save on yet.
@@ -381,9 +401,11 @@ function updateButtons() {
   recognizePendingBtn.disabled = !detections.some((d) => d.score == null && !d.attempted && !d.manual);
   pruneOverlappingBtn.disabled = computeOverlapWarnings().size === 0;
   pruneEmptyBtn.disabled = !detections.some((d) => d.score == null && d.attempted);
-  // Enabled when any box carries usable text -- an OCR read or a hand-entered
-  // label (which has no score). A blank manual label ("no label here") doesn't count.
-  goToGuideBtn.disabled = !detections.some((d) => d.text && d.text.trim());
+  // Enabled when any box *in the whole batch* carries usable text -- an OCR
+  // read or a hand-entered label (which has no score). A blank manual label
+  // ("no label here") doesn't count. Not scoped to the active image: the
+  // handoff itself unions every image's labelled boxes (see below).
+  goToGuideBtn.disabled = !state.images.some((img) => img.detections.some((d) => d.text && d.text.trim()));
   finishBatchBtn.disabled = state.images.length === 0;
   clearBoxesBtn.disabled = detections.length === 0;
   dropImageBtn.disabled = !active;
@@ -466,13 +488,17 @@ async function dropImage() {
   if (state.activeId == null) {
     fileInput.value = "";
     ctx.clearRect(0, 0, display.width, display.height);
+  } else {
+    // Not an unconditional renderActiveView(): that would recompute the
+    // now-active image's view/minScale, resetting pan/zoom it may already
+    // have had from an earlier visit. ensureActiveViewInitialized() only
+    // does that the first time this particular image is actually shown.
+    ensureActiveViewInitialized();
   }
-  // No renderActiveView() when switching to another remaining image: it
-  // would recompute that image's view/minScale, resetting pan/zoom it may
-  // already have had from an earlier visit.
   updateInfoLine();
   updateButtons();
   renderResultsList();
+  renderImageSwitcher();
   redrawCanvas();
 
   if (droppedSha) {
@@ -499,6 +525,7 @@ async function emptyBatch() {
   updateInfoLine();
   updateButtons();
   renderResultsList();
+  renderImageSwitcher();
   await clearStoredBatch();
 }
 
@@ -526,6 +553,34 @@ async function clearAll() {
   if (!confirm("Clear everything -- the current batch AND every previously saved label? This cannot be undone.")) return;
   await emptyBatch();
   await clearAllLabels().catch(() => {});
+}
+
+// Switches which image in the batch is active (image-switcher.js). Disabled
+// mid-scan (the switcher itself refuses to wire up a click for that case, but
+// this guards direct callers too) -- v1 keeps scanning exclusive to the
+// active image, so the image a scan targets must not change underneath it.
+// Deliberately not routed through redraw(): switching changes no detection
+// data, so re-persisting the (unchanged) newly-active image's label would be
+// pure noise -- only the batch's `active` pointer needs a fresh write, so a
+// reload resumes on the same image rather than always the first.
+function switchActiveImage(id) {
+  if (id === state.activeId || state.scanAbortController) return;
+  state.activeId = id;
+  state.lastStatusMessage = null;
+  ensureActiveViewInitialized(); // first-time-only; a no-op for an image already displayed once
+  updateInfoLine();
+  updateButtons();
+  renderResultsList();
+  renderImageSwitcher();
+  redrawCanvas();
+
+  const active = state.active;
+  if (active?.sha256) {
+    persistBatchMeta({
+      order: state.images.filter((img) => img.sha256).map((img) => img.sha256),
+      active: active.sha256,
+    }).catch(() => setStatusMessage("Could not save — storage may be full"));
+  }
 }
 
 // On boot, restore a previously-remembered batch, if any. Runs unawaited;
@@ -644,6 +699,17 @@ const { renderResultsList } = createResultsList({
   updateButtons,
   redraw,
   redrawCanvas,
+});
+
+// The image switcher lives in image-switcher.js; bind it to the shared
+// state, the list/summary elements, and the switch callback, and rebind
+// renderImageSwitcher by name (redraw() and the batch-lifecycle functions
+// call it).
+const { renderImageSwitcher } = createImageSwitcher({
+  state,
+  listEl: imageSwitcherEl,
+  summaryEl: imageSwitcherSummaryEl,
+  switchTo: switchActiveImage,
 });
 
 finishBatchBtn.addEventListener("click", finishBatch);
@@ -775,17 +841,16 @@ fileInput.addEventListener("change", async () => {
   if (parts.length > 0) setStatusMessage(parts.join(" — "));
 });
 
-// Hands every labelled detection's text (of the active image) to guide.js via
-// sessionStorage -- both OCR reads and hand-entered labels (a blank manual
-// "no label" box carries no text and is skipped). Not deduped: a real board
-// pile can hold several copies of the same board, and guide.js counts
-// quantities to allocate complete sets. Use "Prune overlapping" first if a
-// region got detected more than once by mistake; every box left after that
-// counts as one real board. Unioning across every image in the batch, not
-// just the active one, is a follow-up step (PLAN.md, "Multi-image workflow").
+// Hands every labelled detection's text, unioned across every image in the
+// batch (not just the active one), to guide.js via sessionStorage -- both OCR
+// reads and hand-entered labels (a blank manual "no label" box carries no
+// text and is skipped). Not deduped: a real board pile can hold several
+// copies of the same board, and guide.js counts quantities to allocate
+// complete sets. Use "Prune overlapping" first if a region got detected more
+// than once by mistake; every box left after that counts as one real board.
 goToGuideBtn.addEventListener("click", () => {
-  const detections = state.active?.detections ?? [];
-  const numbers = detections
+  const numbers = state.images
+    .flatMap((img) => img.detections)
     .filter((d) => d.text && d.text.trim())
     .map((d) => d.text.trim());
   if (numbers.length === 0) return;
