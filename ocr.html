@@ -59,12 +59,36 @@
   }
   .icon-btn:hover { background: #eee; }
 
+  /* The four destructive Clear-family operations (PLAN.md, "Multi-image
+     workflow") live behind this one menu, escalating by scope top to bottom;
+     "Finish batch" (safe, no confirm) stays a plain sibling button. */
+  .dropdown { position: relative; display: inline-block; }
+  .dropdown-menu {
+    position: absolute; top: 100%; left: 0; margin-top: 0.25rem; z-index: 10;
+    flex-direction: column; gap: 0.1rem; min-width: 11rem;
+    background: #fff; border: 1px solid #ccc; border-radius: var(--panel-radius);
+    padding: 0.25rem;
+  }
+  /* Setting display unconditionally on .dropdown-menu would win over the
+     browser's own [hidden] { display: none } (author CSS always beats the
+     user-agent stylesheet, regardless of the hidden attribute) -- so the
+     "shown" display value only applies once [hidden] is actually removed. */
+  .dropdown-menu:not([hidden]) { display: flex; }
+  .dropdown-menu button {
+    text-align: left; white-space: nowrap; border: none; background: none;
+    font: inherit; padding: 0.35rem 0.5rem; border-radius: 4px; cursor: pointer;
+  }
+  .dropdown-menu button:hover:not(:disabled) { background: #eee; }
+  .dropdown-menu button:disabled { color: var(--muted-text); cursor: default; }
+
   @media (prefers-color-scheme: dark) {
     #cheatsheet { border-color: #444; }
     #resultsPanel { border-color: #444; }
     .result-row { border-color: #333; }
     .icon-btn { background: #262626; border-color: #444; color: #ddd; }
     .icon-btn:hover { background: #333; }
+    .dropdown-menu { background: #1c1c1c; border-color: #444; }
+    .dropdown-menu button:hover:not(:disabled) { background: #333; }
   }
 </style>
 </head>
@@ -86,7 +110,16 @@
     <button id="runOcr" disabled>OCR full photo</button>
     <button id="recognizePending" disabled>OCR new boxes</button>
     <button id="cancelScan" disabled>Cancel scan</button>
-    <button id="clearScan" disabled>Clear</button>
+    <button id="finishBatch" disabled title="Empty the batch; every image's boxes stay saved and reattach if you re-select the same files">Finish batch</button>
+    <div class="dropdown">
+      <button id="clearMenuToggle" type="button" aria-haspopup="true" aria-expanded="false">Clear &#9662;</button>
+      <div id="clearMenuItems" class="dropdown-menu" hidden>
+        <button type="button" id="clearImage" disabled title="Remove every box from the active image; the image stays loaded">Clear image</button>
+        <button type="button" id="dropImage" disabled title="Remove the active image from the batch; its boxes stay saved">Drop image</button>
+        <button type="button" id="clearBatch" disabled title="Empty the batch and delete these images' saved boxes">Clear batch</button>
+        <button type="button" id="clearAll" title="Empty the batch and delete every image's saved boxes, ever">Clear all</button>
+      </div>
+    </div>
     <button id="goToGuide" disabled>Handoff to identify</button>
   </div>
   <details id="cheatsheet">
@@ -104,7 +137,9 @@
       <tr><td>Hover near a box (or select it), click the &times; floating above it</td><td>Delete that box immediately</td></tr>
       <tr><td>Click a result in the list</td><td>Select/deselect its box</td></tr>
       <tr><td>&#128269; / &times; next to a list row</td><td>Pan/zoom to that box / delete it directly</td></tr>
-      <tr><td>&#10697; / &#8709; / &#128465; above the list</td><td>Prune overlapping boxes / prune empty boxes / clear all boxes (keeps the photo)</td></tr>
+      <tr><td>&#10697; / &#8709; above the list</td><td>Prune overlapping boxes / prune empty boxes</td></tr>
+      <tr><td>"Clear &#9662;" menu</td><td>Clear image (boxes only) / Drop image (leaves the batch) / Clear batch (also deletes its saved boxes) / Clear all (deletes every saved box, ever)</td></tr>
+      <tr><td>Finish batch</td><td>Empty the batch for now; every image's boxes stay saved and reattach if you re-select the same files</td></tr>
     </table>
   </details>
   <div id="status"></div>
@@ -116,7 +151,6 @@
         <div id="resultsHeaderActions">
           <button id="pruneOverlapping" class="icon-btn" disabled title="Prune overlapping boxes">&#10697;</button>
           <button id="pruneEmpty" class="icon-btn" disabled title="Prune empty boxes (tried, found nothing)">&#8709;</button>
-          <button id="clearBoxes" class="icon-btn" disabled title="Clear all boxes (keeps the loaded photo)">&#128465;</button>
         </div>
       </div>
       <ul id="results"></ul>

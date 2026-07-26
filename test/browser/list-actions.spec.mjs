@@ -123,14 +123,18 @@ describe("list bulk actions", { skip: chromePath ? false : "no Chrome found" }, 
       "a never-tried (not yet recognized) box should not count as empty");
   });
 
-  test("Clear boxes removes every detection but keeps the loaded photo", async () => {
+  test("Clear image removes every detection but keeps the loaded photo", async () => {
     await seedDetections([
       { id: 1, box: [[10, 10], [60, 10], [60, 40], [10, 40]], text: "a", score: 0.9, source: "auto" },
       { id: 2, box: [[100, 10], [150, 10], [150, 40], [100, 40]], text: "b", score: 0.8, source: "auto" },
     ]);
 
     page.dialogAccept = true; // confirm() the "Clear all boxes?" prompt
-    await page.evaluate(`document.getElementById("clearBoxes").click(); true`);
+    await page.evaluate(`
+      document.getElementById("clearMenuToggle").click();
+      document.getElementById("clearImage").click();
+      true
+    `);
     await page.waitFor(`document.querySelectorAll("#results li").length === 0`, "boxes cleared");
 
     assert.equal((await readState(page)).detections.length, 0);
@@ -138,7 +142,7 @@ describe("list bulk actions", { skip: chromePath ? false : "no Chrome found" }, 
       "the photo itself should still be loaded");
   });
 
-  test("Clear boxes does nothing if the confirmation is declined", async () => {
+  test("Clear image does nothing if the confirmation is declined", async () => {
     await seedDetections([
       { id: 1, box: [[10, 10], [60, 10], [60, 40], [10, 40]], text: "a", score: 0.9, source: "auto" },
     ]);
@@ -146,9 +150,13 @@ describe("list bulk actions", { skip: chromePath ? false : "no Chrome found" }, 
     page.dialogAccept = false; // decline the confirm()
     // Runtime.evaluate's response only arrives once the whole click handler
     // returns, and confirm() blocks synchronously until the dialog is
-    // answered -- so by the time this resolves, clearDetections() has already
+    // answered -- so by the time this resolves, clearImage() has already
     // read `false` back and returned. No wait beyond that is needed.
-    await page.evaluate(`document.getElementById("clearBoxes").click(); true`);
+    await page.evaluate(`
+      document.getElementById("clearMenuToggle").click();
+      document.getElementById("clearImage").click();
+      true
+    `);
     page.dialogAccept = true;
 
     assert.equal((await readState(page)).detections.length, 1, "declining should leave the box in place");

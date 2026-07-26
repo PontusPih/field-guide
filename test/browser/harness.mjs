@@ -150,10 +150,10 @@ class Page {
   #nextId = 0;
   #pending = new Map();
   consoleErrors = [];
-  // clearSession()/clearDetections() both gate on window.confirm(); a dialog
-  // left unhandled blocks the page indefinitely, so one is always answered
-  // automatically. A spec that needs to answer "Cancel" instead sets this to
-  // false before the click that triggers it.
+  // Four of the five Clear-family operations (ocr.js) gate on window.confirm();
+  // a dialog left unhandled blocks the page indefinitely, so one is always
+  // answered automatically. A spec that needs to answer "Cancel" instead sets
+  // this to false before the click that triggers it.
   dialogAccept = true;
   // Raw V8 coverage snapshots (Profiler.takePreciseCoverage()'s own result
   // shape), one per navigation plus a final one at close() -- a full page

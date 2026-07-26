@@ -304,8 +304,34 @@ ledger entry, no rework of anything above.
       value that can only be true once *that* load's `persistBatchMeta`/`persistLabel` calls --
       awaited in sequence after `replaceImages` in `ocr.js` -- have actually resolved).
       **Verified:** 98 unit + 44 browser tests green, run twice for stability.
-- [ ] The five Clear-family operations + the "Clear ▾" menu + the standalone "Finish batch"
-      button.
+- [x] The five Clear-family operations + the "Clear ▾" menu + the standalone "Finish batch"
+      button. `clearSession`/`clearDetections` renamed to `clearBatch`/`clearImage` (logic
+      unchanged, already matched); added `dropImage()`, `finishBatch()`, `clearAll()`, and a
+      shared `emptyBatch()` helper the three whole-batch operations (Finish/Clear
+      batch/Clear all) call to reset `state.images`/UI/`clearStoredBatch()` in common, differing
+      only in whether they also touch `labels` (`deleteLabels`/`clearAllLabels`) and whether
+      they `confirm()` first. `ocr.html`: `clearImage`/`dropImage`/`clearBatch`/`clearAll` live
+      behind a plain-JS "Clear ▾" `.dropdown` (open on toggle click, close on outside
+      click/Escape/choosing an item); `finishBatch` stays a standalone button, the only one of
+      the five with no confirmation, since nothing is lost.
+      New `test/browser/clear-operations.spec.mjs` (4 tests) covers what's new: Drop image
+      changes only batch membership (ledger entry survives, the next image becomes active);
+      Finish batch skips confirmation entirely and every dropped image's ground truth
+      reattaches later; Clear all reaches images that were never even in the current batch
+      (unlike Clear batch, scoped to it) -- the distinction that makes the two meaningfully
+      different; and the menu opens/closes without misfiring an action. Existing specs
+      (`session`/`list-actions`) updated to open the menu before clicking the operations that
+      moved into it, and renamed to match ("Clear" → "Clear batch", "Clear boxes" → "Clear
+      image").
+      All three of the newly-added operations mutation-tested (dropImage leaving the ledger
+      untouched; finishBatch's missing confirm; clearAll's whole-ledger vs. clearBatch's
+      scoped-to-batch reach) — each confirmed to fail without its defining behavior.
+      **Two more instances of the same persistence race** (see the batch-load flow above)
+      surfaced while writing the new tests -- `dropImage()`/`clearAll()` are fire-and-forget
+      from their click handlers, so a test checking IndexedDB immediately after the click could
+      race their internal `await`s. Fixed the same way: poll for the specific persisted change
+      (the batch's new size, the ledger's emptiness) rather than asserting immediately.
+      **Verified:** 98 unit + 49 browser tests green, run twice for stability.
 - [ ] Image-switcher UI: list the images in the current batch, pick which to view/edit
       (disabled mid-scan), with a running "N boards across M images" summary.
 - [ ] Curate one combined list of found labels, each tagged with which image and the

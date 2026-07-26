@@ -67,21 +67,25 @@ describe("session persistence", { skip: chromePath ? false : "no Chrome found" }
     assert.equal(await page.evaluate(`document.querySelectorAll("#results li").length`), 0);
   });
 
-  test("Clear removes the photo and every box, and a reload does not bring them back",
+  test("Clear batch removes the photo and every box, and a reload does not bring them back",
     async () => {
       await loadSyntheticPhoto(page);
       const rect = await stageRect(page);
       await dragFrac(page, rect, 0.15, 0.15, 0.45, 0.35);
       await page.waitFor(`document.querySelectorAll("#results li").length === 1`, "box drawn");
 
-      page.dialogAccept = true; // confirm() the "Clear the loaded photo and all boxes?" prompt
-      await page.evaluate(`document.getElementById("clearScan").click(); true`);
+      page.dialogAccept = true; // confirm() the "Clear this batch and its boxes?" prompt
+      await page.evaluate(`
+        document.getElementById("clearMenuToggle").click();
+        document.getElementById("clearBatch").click();
+        true
+      `);
 
       assert.equal(await page.evaluate(`document.getElementById("runOcr").disabled`), true,
-        "Clear should drop the photo, not just the boxes");
+        "Clear batch should drop the photo, not just the boxes");
       assert.equal(await page.evaluate(`document.querySelectorAll("#results li").length`), 0);
 
-      // clearSession()'s IndexedDB delete is awaited *after* its synchronous
+      // clearBatch()'s IndexedDB delete is awaited *after* its synchronous
       // UI reset, so it can still be in flight once the assertions above
       // pass. Reloading before it lands would race the delete -- wait for the
       // batch record (cleared by clearStoredBatch()) to actually be gone first.

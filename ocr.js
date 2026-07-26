@@ -35,8 +35,8 @@ import { resolveTileSize, TILE_SIZE_STORAGE_KEY } from "./tiling.js";
 import { resolveBackendUrl, BACKEND_URL_STORAGE_KEY, LOCALHOST_NAMES } from "./backend-config.js";
 import { sha256Hex } from "./hashing.js";
 import {
-  loadBatch, loadLabelsFor, persistLabel, persistBatchMeta, replaceImages, clearStoredBatch,
-  deleteLabels,
+  loadBatch, loadLabelsFor, persistLabel, persistBatchMeta, replaceImages, deleteImage,
+  clearStoredBatch, deleteLabels, clearAllLabels,
 } from "./session-store.js";
 import { createScan } from "./scan.js";
 import { createCanvasView } from "./canvas-view.js";
@@ -111,8 +111,13 @@ const cancelScanBtn = document.getElementById("cancelScan");
 const recognizePendingBtn = document.getElementById("recognizePending");
 const pruneOverlappingBtn = document.getElementById("pruneOverlapping");
 const pruneEmptyBtn = document.getElementById("pruneEmpty");
-const clearBtn = document.getElementById("clearScan");
-const clearBoxesBtn = document.getElementById("clearBoxes");
+const finishBatchBtn = document.getElementById("finishBatch");
+const clearMenuToggle = document.getElementById("clearMenuToggle");
+const clearMenuItems = document.getElementById("clearMenuItems");
+const clearImageBtn = document.getElementById("clearImage");
+const dropImageBtn = document.getElementById("dropImage");
+const clearBatchBtn = document.getElementById("clearBatch");
+const clearAllBtn = document.getElementById("clearAll");
 const goToGuideBtn = document.getElementById("goToGuide");
 const statusEl = document.getElementById("status");
 const resultsEl = document.getElementById("results");
@@ -379,42 +384,36 @@ function updateButtons() {
   // Enabled when any box carries usable text -- an OCR read or a hand-entered
   // label (which has no score). A blank manual label ("no label here") doesn't count.
   goToGuideBtn.disabled = !detections.some((d) => d.text && d.text.trim());
-  clearBtn.disabled = !hasImage && detections.length === 0;
-  clearBoxesBtn.disabled = detections.length === 0;
+  finishBatchBtn.disabled = state.images.length === 0;
+  clearImageBtn.disabled = detections.length === 0;
+  dropImageBtn.disabled = !active;
+  clearBatchBtn.disabled = state.images.length === 0;
+  // clearAllBtn is deliberately never disabled: it targets the whole
+  // permanent ledger, which can hold data worth wiping even when no batch is
+  // currently loaded, and checking whether the ledger is empty needs an
+  // async IndexedDB read this synchronous function can't do.
 }
 
 
 // ─── Batch lifecycle ─────────────────────────────────────────────────────────
 
-// Today's "Clear" button: wipes the current batch entirely, including these
-// images' ground truth. This is what PLAN.md's five-operation design calls
-// "Clear batch" -- kept under its original name/button for now; the other
-// four operations (Clear image / Drop image / Finish batch / Clear all) and
-// the "Clear ▾" menu are a follow-up step.
-async function clearSession() {
-  if (state.images.length === 0) return;
-  if (!confirm("Clear the loaded photo and all boxes?")) return;
+// The five Clear-family operations (PLAN.md, "Multi-image workflow"), an
+// escalation by scope -- only Clear batch and Clear all ever touch the
+// permanent `labels` ledger:
+//
+//   Clear image  -- active image's boxes only, image stays, ledger reflects
+//                   the edit normally (no special-casing needed)
+//   Drop image   -- active image leaves the batch, ledger untouched
+//   Finish batch -- whole batch emptied, ledger untouched, no confirm --
+//                   reversible: re-selecting the same files reattaches
+//                   everything (see the batch-load flow below)
+//   Clear batch  -- whole batch emptied, ledger entries for *these* images
+//                   deleted
+//   Clear all    -- whole batch emptied, *every* ledger entry ever deleted
 
-  if (state.scanAbortController) state.scanAbortController.abort();
-
-  const shaList = state.images.filter((img) => img.sha256).map((img) => img.sha256);
-  state.images = [];
-  state.activeId = null;
-
-  fileInput.value = "";
-  ctx.clearRect(0, 0, display.width, display.height);
-  state.lastStatusMessage = null; // don't let a stale message survive the clear
-  updateInfoLine();
-  updateButtons();
-  renderResultsList();
-
-  await clearStoredBatch();
-  if (shaList.length > 0) await deleteLabels(shaList).catch(() => {});
-}
-
-// Today's "Clear boxes" button: drops every box on the active image (drawn,
-// pending, or recognized) but keeps it loaded. PLAN.md's "Clear image".
-function clearDetections() {
+// Drops every box on the active image (drawn, pending, or recognized) but
+// keeps it loaded.
+function clearImage() {
   const active = state.active;
   if (!active || active.detections.length === 0) return;
   if (!confirm("Clear all boxes? The loaded photo is kept.")) return;
@@ -439,6 +438,89 @@ function clearDetections() {
   updateInfoLine(); // re-renders the (now blank) status line
   updateButtons();
   redraw(); // persists the now-empty detections, the same as any other edit
+}
+
+// Removes the active image from the batch entirely (its boxes go with it),
+// but its ledger entry (if any) is untouched -- matches "it might be there
+// are no boards on it": nothing worth keeping usually exists there yet, and
+// if it does, leaving the batch isn't reason enough to discard it.
+async function dropImage() {
+  const active = state.active;
+  if (!active) return;
+  const label = active.fileName ? `"${active.fileName}"` : "this image";
+  if (!confirm(`Drop ${label} from the batch? (Any ground truth already saved for it is kept.)`)) return;
+
+  if (state.scanAbortController) state.scanAbortController.abort();
+  const droppedSha = active.sha256;
+  const remaining = state.images.filter((img) => img.id !== active.id);
+  state.images = remaining;
+  state.activeId = remaining[0]?.id ?? null;
+  thumbnails.clear(active.id);
+  state.lastStatusMessage = null;
+
+  if (state.activeId == null) {
+    fileInput.value = "";
+    ctx.clearRect(0, 0, display.width, display.height);
+  }
+  // No renderActiveView() when switching to another remaining image: it
+  // would recompute that image's view/minScale, resetting pan/zoom it may
+  // already have had from an earlier visit.
+  updateInfoLine();
+  updateButtons();
+  renderResultsList();
+  redrawCanvas();
+
+  if (droppedSha) {
+    await deleteImage(droppedSha).catch(() => {});
+    await persistBatchMeta({
+      order: remaining.filter((img) => img.sha256).map((img) => img.sha256),
+      active: state.active?.sha256 ?? null,
+    }).catch(() => {});
+  }
+}
+
+// Shared reset for the three operations that empty the whole batch (Finish
+// batch / Clear batch / Clear all): drops every loaded image from memory and
+// the UI, and clears the `images`/`batch` stores. Callers differ only in
+// whether they also touch the permanent `labels` ledger, and whether they
+// confirm first.
+async function emptyBatch() {
+  if (state.scanAbortController) state.scanAbortController.abort();
+  state.images = [];
+  state.activeId = null;
+  fileInput.value = "";
+  ctx.clearRect(0, 0, display.width, display.height);
+  state.lastStatusMessage = null;
+  updateInfoLine();
+  updateButtons();
+  renderResultsList();
+  await clearStoredBatch();
+}
+
+// The routine, low-friction way to wrap up: no confirm(), because nothing is
+// lost -- every image's ground truth stays in the ledger, so re-selecting the
+// same files afterward reattaches it all (see the batch-load flow below).
+async function finishBatch() {
+  if (state.images.length === 0) return;
+  await emptyBatch();
+}
+
+// Empties the batch and deletes ground truth for the images that were in it
+// (scoped to this batch, not the whole ledger -- see Clear all for that).
+async function clearBatch() {
+  if (state.images.length === 0) return;
+  if (!confirm("Clear this batch and its boxes? Ground truth already saved for these images will be deleted too.")) return;
+  const shaList = state.images.filter((img) => img.sha256).map((img) => img.sha256);
+  await emptyBatch();
+  if (shaList.length > 0) await deleteLabels(shaList).catch(() => {});
+}
+
+// The full reset: empties the batch and wipes the entire permanent ledger --
+// every image ever labeled, not just this batch's.
+async function clearAll() {
+  if (!confirm("Clear everything -- the current batch AND every previously saved label? This cannot be undone.")) return;
+  await emptyBatch();
+  await clearAllLabels().catch(() => {});
 }
 
 // On boot, restore a previously-remembered batch, if any. Runs unawaited;
@@ -491,7 +573,7 @@ async function restoreBatch() {
 // ─── Composition root: instantiate the modules, wire the buttons, boot ───────
 
 // Memoized results-list thumbnails; built first so the clear-on-image-change
-// call sites (clearSession/clearDetections/rotate/new photo) can reach it.
+// call sites (clearBatch/clearImage/dropImage/rotate/new photo) can reach it.
 const thumbnails = createThumbnailCache({ state });
 
 // Canvas rendering and the view transform live in canvas-view.js; bind them to
@@ -559,8 +641,40 @@ const { renderResultsList } = createResultsList({
   redrawCanvas,
 });
 
-clearBtn.addEventListener("click", clearSession);
-clearBoxesBtn.addEventListener("click", clearDetections);
+finishBatchBtn.addEventListener("click", finishBatch);
+
+// The four destructive operations live behind this menu (PLAN.md,
+// "Multi-image workflow"); each click closes it, whether or not its own
+// confirm() was accepted, so the menu never lingers open over a completed
+// action.
+clearMenuToggle.addEventListener("click", () => {
+  const opening = clearMenuItems.hidden;
+  clearMenuItems.hidden = !opening;
+  clearMenuToggle.setAttribute("aria-expanded", String(opening));
+});
+document.addEventListener("click", (e) => {
+  if (clearMenuItems.hidden) return;
+  if (e.target === clearMenuToggle || clearMenuItems.contains(e.target)) return;
+  clearMenuItems.hidden = true;
+  clearMenuToggle.setAttribute("aria-expanded", "false");
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !clearMenuItems.hidden) {
+    clearMenuItems.hidden = true;
+    clearMenuToggle.setAttribute("aria-expanded", "false");
+  }
+});
+for (const [btn, action] of [
+  [clearImageBtn, clearImage], [dropImageBtn, dropImage],
+  [clearBatchBtn, clearBatch], [clearAllBtn, clearAll],
+]) {
+  btn.addEventListener("click", () => {
+    clearMenuItems.hidden = true;
+    clearMenuToggle.setAttribute("aria-expanded", "false");
+    action();
+  });
+}
+
 rotateLeftBtn.addEventListener("click", () => rotate(-90));
 rotateRightBtn.addEventListener("click", () => rotate(90));
 runOcrBtn.addEventListener("click", scan.runFullScan);
