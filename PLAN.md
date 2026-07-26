@@ -161,33 +161,97 @@ spending cap/kill-switch), not pay-per-use exposure.
 A real board pile often won't fit in one photo, so the goal is to scan several and combine
 them into one identification. Combining is nearly free at the handoff — `guide.js` already
 takes a newline list and counts quantities — so the work is in the data model and the UI, not
-the merge. The shaping decision is whether earlier photos stay re-editable or results only
-accumulate forward; that picks the data model. **Chosen: the structural stepping stone** —
-commit to a multi-session state shape up front (`state.sessions = [{ id, img, full, rotation,
-view, detections, nextId }, …]` plus an `activeId`) but reveal it through the UI
-incrementally, newest-session-only first. That shape *is* the full data model, so later phases
-add only UI, no data rework. The lossy alternative — accumulate just the recognized numbers of
-finished photos and discard their pixels/boxes — is cheaper now but a partial dead-end,
-replaced rather than extended once re-editing an earlier photo is wanted. The `ocr.js`
-restructure (now complete — see `refactor-plan.md`) is what makes the stepping stone cheap:
-repointing the modules onto the active session is the step-9 rename pattern, not a rewrite.
-Planned, not started.
+the merge. This is also the substrate for building `hasso/labels.json` ground truth
+(`groundtruth.md`) by hand-labeling many real photos, which is what surfaced the design below:
+labeling 221+ images meant confronting IndexedDB growth and vocabulary head-on before writing
+code. **Status: designed, not yet implemented.**
 
-- [ ] Repoint the modules onto an active session — `state.<field>` → `state.active.<field>`
-      across `canvas-view`/`interaction`/`results-list`/`scan`/`thumbnails` (string/comment-aware
-      rename, backed by the 85 + 32 tests) — and make "load next photo" append a session
-      instead of overwriting the single slot.
+**Vocabulary.** An **image** is one loaded photo and its working state (what the earlier sketch
+called a "session" — renamed because `session-store.js`/"the session" already means something
+broader: the tool's whole persisted working state). A **batch** is the current *set* of loaded
+images — `state.images[]` collectively. "Session" keeps its original meaning; it is never used
+for a single image.
+
+**State shape.**
+```
+state.images = []       // [{ id, sha256, fileName, img, rotation, full, view, minScale,
+                         //    detections, nextId, selectedId, draftBox, hoverDeleteId, hoverBoxId }]
+state.activeId = null
+```
+`id` is a small integer, assigned the instant a file is picked — the session's true key.
+`sha256` is a separate field, filled in once `crypto.subtle.digest` resolves (hashing is
+async, so identity can't wait on it). `state.active` is a getter (`images.find(i => i.id ===
+activeId)`) so the `state.<field>` → `state.active.<field>` repoint (the step-9 rename
+pattern) reads/writes the right image automatically. Unlike step 9, this repoint is **not**
+done as a blind tokenizer pass: `state.active` can be `null` (nothing loaded yet), so every
+*read* guard becomes `state.active?.field` while every *write* stays bare `state.active.field
+= …` (writes only ever happen once an image is known to exist) — a per-call-site judgement,
+not a mechanical substitution.
+`scanQueue`, `pendingPlaceholders`, `tileOverlay`, `scanAbortController`, `suppressScanSummary`,
+`lastStatusMessage` stay top-level, not per-image: **v1 deliberately keeps scanning exclusive
+to the active image** (switching images is disabled while a scan is in flight, the same gating
+rotate already uses) rather than making the scan queue per-image — real added complexity,
+not needed yet.
+
+**IndexedDB: three stores, replacing the single-slot schema.**
+- `images` (keyed by `sha256`) — blobs for the *current batch only*. Cleared and replaced
+  wholesale on every batch change. This is what bounds growth: at most one batch's worth of
+  image bytes is ever persisted, not a cumulative archive (`hasso/` alone is ~114MB across 221
+  images — fine for a single batch on any non-mobile browser, not something to let accumulate
+  forever across every batch ever loaded).
+- `labels` (keyed by `sha256`) — `{filename, rotation, detections}`, permanent, upserted on
+  every edit to the image that's currently active (only the active image can be edited, so
+  there is nothing to "catch up" when the batch changes — every image's ledger entry is always
+  current the moment its edit happens). Never purged except by the two Clear operations below
+  that name it explicitly. Small forever (KBs/entry even at thousands of images) — and doubles
+  as the working draft of `hasso/labels.json` (`groundtruth.md`) for that step's export.
+- `batch` (single record) — `{order: [sha256, …], active: sha256}`, describing the current
+  batch's composition and order, so a reload can reconstruct `state.images[]` faithfully
+  without needing files re-selected (their bytes are still in `images`).
+
+**Loading a batch:** hash each incoming file, check `labels` for a match, reattach
+`rotation`/`detections` if found (a previously-labeled image "remembers" its boxes even with
+freshly-supplied pixels), then write the new `images` + `batch`. Selecting one file is a batch
+of size one — no special-casing anywhere in this design.
+
+**Five "Clear"-family operations**, an escalation by scope, only two of which ever touch the
+permanent ledger:
+
+| # | Action | Batch membership | `labels` ledger | Confirm? |
+|---|---|---|---|---|
+| 1 | Clear image | active image's boxes only, image stays | reflects the edit normally (no special-casing — clearing to zero boxes is just an edit) | yes |
+| 2 | Drop image | active image removed from batch | untouched | yes |
+| 3 | **Finish batch** | entire batch emptied | untouched | **no** — reversible: re-selecting the same files reattaches everything from the ledger |
+| 4 | Clear batch | entire batch emptied | deleted, scoped to this batch's images | yes |
+| 5 | Clear all | entire batch emptied | deleted, every image ever labeled | yes |
+
+1/2/4/5 live behind a single "Clear ▾" menu (too many destructive actions to leave as top-level
+buttons); "Finish batch" stands alone as the routine, low-friction action — it's what "loading a
+new batch of files" already does as a side effect (fold + purge), offered explicitly for
+finishing up without a next batch ready yet.
+
+**Known follow-up, not blocking:** naming a batch (e.g. "hasso") so returning to it later and
+adding more images reads as the same effort, for filtering/export/provenance. Not needed
+mechanically — the sha256-keyed ledger already lets you re-select a folder that's grown since
+last time and get correct reattach-old/blank-new behavior with no name at all — so this is
+purely organizational polish, addable later as an optional field on the `batch` record and each
+ledger entry, no rework of anything above.
+
+- [ ] `session-store.js`: rewrite to the three-store schema above (`loadBatch`,
+      `clearStoredBatch`, `persistLabel`, `persistBatchMeta`, plus the deletion helpers the
+      five Clear operations need); a `sha256Hex(blob)` hashing helper (`crypto.subtle.digest`).
+- [ ] Repoint `canvas-view`/`interaction`/`results-list`/`scan`/`thumbnails`/`ocr.js` onto
+      `state.active.<field>`, per the read/write distinction above. `test/browser/fixtures.mjs`'s
+      `readState()` reads the old single-key shape directly — every existing browser spec that
+      calls it needs updating to the new schema; this is the largest mechanical cost of the step.
+- [ ] Multi-file input + the batch-load flow (hash, ledger reattach, purge, persist).
+- [ ] The five Clear-family operations + the "Clear ▾" menu + the standalone "Finish batch"
+      button.
+- [ ] Image-switcher UI: list the images in the current batch, pick which to view/edit
+      (disabled mid-scan), with a running "N boards across M images" summary.
 - [ ] Curate one combined list of found labels, each tagged with which image and the
       coordinates within that image it came from; the handoff unions recognized text across
-      all sessions.
-- [ ] Resumable per-image sessions, keyed by a SHA-256 checksum of the image (native
-      `crypto.subtle.digest`, no library, single-digit ms for a multi-MB photo — MD5 isn't
-      available in that API, and isn't needed). Today's single-slot IndexedDB persistence
-      (`ocr.js`: one image + its boxes under fixed keys, overwritten by the next upload)
-      becomes multiple records keyed by hash.
-- [ ] Session-switcher UI: list the photos in the current pile, pick which to view/edit, with
-      a running "N boards across M photos" summary. This is the increment that turns the
-      single-image-UI stepping stone into full multi-image.
+      the whole batch.
 
 **Integration**
 - [x] Decide where this lives in the shipped app — `index.html` is now a landing page
