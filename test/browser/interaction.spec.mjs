@@ -98,6 +98,47 @@ describe("canvas interaction", { skip: chromePath ? false : "no Chrome found" },
     assert.equal(await isSelected(page), false, "clicking empty canvas should deselect");
   });
 
+  test("selecting a box on the canvas scrolls its results-list row into view", async () => {
+    // #resultsPanel has max-height: 650px and overflow-y: auto (ocr.html); 20
+    // boxes comfortably overflow it, so row 1 and row 20 can't both be
+    // visible at once. Laid out in two columns, alternating, rather than one
+    // tight vertical stack: each newly-drawn box is left selected with resize
+    // handles showing at its corners (RESIZE_HANDLE_HIT_RADIUS px), and boxes
+    // stacked close together in a single column put the next draw's start
+    // point within that radius of the previous box's handle -- turning the
+    // "new box" drag into a resize of the previous one instead. Alternating
+    // columns keeps every consecutive pair of draws far apart.
+    const count = 20;
+    const boxCenters = [];
+    for (let i = 0; i < count; i++) {
+      const x0 = i % 2 === 0 ? 0.05 : 0.55;
+      const y0 = 0.02 + Math.floor(i / 2) * 0.09;
+      await dragFrac(page, rect, x0, y0, x0 + 0.08, y0 + 0.06);
+      boxCenters.push({ x: x0 + 0.04, y: y0 + 0.03 });
+    }
+    await page.waitFor(`document.querySelectorAll("#results li").length === ${count}`, "all boxes drawn");
+
+    const rowVisible = (index) => page.evaluate(`
+      (() => {
+        const panel = document.getElementById("resultsPanel").getBoundingClientRect();
+        const row = document.querySelectorAll("#results li")[${index}].getBoundingClientRect();
+        return row.top >= panel.top && row.bottom <= panel.bottom;
+      })()
+    `);
+
+    // Drawing box 20 left it selected, which already scrolled its own row
+    // into view -- confirming the panel actually is scrolled away from row 1,
+    // so selecting row 1 next is a real test of the scroll, not a no-op.
+    assert.equal(await rowVisible(0), false,
+      "row 1 should be scrolled out of view after row 20 was scrolled into view");
+
+    // Click box 1 directly on the canvas (not in the list).
+    await clickFrac(page, rect, boxCenters[0].x, boxCenters[0].y);
+
+    assert.equal(await rowVisible(0), true,
+      "selecting box 1 on the canvas should scroll its results-list row into view");
+  });
+
   test("dragging a selected box's corner handle resizes it, pinning the opposite corner",
     async () => {
       await drawBox(); // leaves it selected, so its resize handles are already live

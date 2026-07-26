@@ -625,6 +625,19 @@ would hit the ~700MB ceiling directly. Implemented (`ocr.js`, `tiling.js`,
          is too subtle to spot at a glance; make it clearly distinct (e.g. a background tint
          or border, not just font-weight).
       Not yet designed in detail.
+- [ ] **Selecting a box scrolls the whole page, not just the results list.** The
+      scroll-into-view fix (this session, `results-list.js`) calls
+      `li.scrollIntoView({ block: "nearest", inline: "nearest" })`, which walks *every*
+      scrollable ancestor of the row, not just `#resultsPanel` — if the page itself is
+      scrolled (the tool sits below the fold), selecting a box whose row needs scrolling
+      within the panel also drags the whole page's scroll position along with it.
+      `block`/`inline: "nearest"` only controls alignment *within* each ancestor it touches;
+      it doesn't limit which ancestors get scrolled at all. Fix direction: compute and set
+      `#resultsPanel.scrollTop` directly from the row's `offsetTop`/`offsetHeight` against the
+      panel's own `scrollTop`/`clientHeight`, rather than relying on the browser's native
+      ancestor-walking `scrollIntoView()`. Bumps into the same "make the selected row clearly
+      distinct" need as item 4 above (bold text alone is easy to miss when the list just
+      jumped) — worth doing both in the same pass.
 
 **Benchmarks**
 Raw data behind the design above, kept for reference. All measured on this dev

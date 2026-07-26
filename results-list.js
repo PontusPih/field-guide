@@ -183,6 +183,13 @@ export function createResultsList({
         }
       });
       resultsEl.appendChild(li);
+      // Selecting a box on the canvas should bring its row into view (e.g.
+      // clicking a box that's currently scrolled out of the visible list).
+      // "nearest" only moves the scroll position when the row isn't already
+      // visible, so this is a no-op for a click that originated in the list
+      // itself (already visible) or a redraw that leaves selection unchanged
+      // (a move/resize/label edit on the already-selected box).
+      if (d.id === active.selectedId) li.scrollIntoView({ block: "nearest", inline: "nearest" });
     });
   }
 
