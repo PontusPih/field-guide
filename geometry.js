@@ -110,15 +110,27 @@ function resizedBounds(handleIndex, sp, startBounds) {
   }
 }
 
+// Rounds a coordinate to 2 decimal places. Finer than any precision actually
+// achievable when editing a box: at MAX_SCALE (ocr.js), one screen pixel of
+// mouse movement is already 0.125 source px, coarser than 0.01 -- and finer
+// than that ceases to mean anything long before a plausible future zoom
+// increase would change that (MAX_SCALE would need to grow past 100 for 2
+// decimals to start losing real precision). Strips the long floating-point
+// tails that view-transform division and the OCR backend's own coordinate
+// scaling otherwise leave in every stored/exported box.
+function round2(n) {
+  return Math.round(n * 100) / 100;
+}
+
 // {x0,y0,x1,y1} in any corner order -> a four-corner box wound clockwise from
 // the top-left, which is the shape every detection's `box` uses.
 function normalizedRectBox(b) {
-  const x0 = Math.min(b.x0, b.x1), x1 = Math.max(b.x0, b.x1);
-  const y0 = Math.min(b.y0, b.y1), y1 = Math.max(b.y0, b.y1);
+  const x0 = round2(Math.min(b.x0, b.x1)), x1 = round2(Math.max(b.x0, b.x1));
+  const y0 = round2(Math.min(b.y0, b.y1)), y1 = round2(Math.max(b.y0, b.y1));
   return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
 }
 
 export {
   toSource, toDisplay, pointInPolygon, hitTestBoxes, distance, nearestWithinRadius,
-  boundsOf, overlapArea, cornersOf, resizedBounds, normalizedRectBox,
+  boundsOf, overlapArea, cornersOf, resizedBounds, normalizedRectBox, round2,
 };

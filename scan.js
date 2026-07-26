@@ -23,7 +23,7 @@
 // this relies on; the rest arrives through the params.
 
 import { tileGrid } from "./tiling.js";
-import { boundsOf } from "./geometry.js";
+import { boundsOf, round2 } from "./geometry.js";
 
 export function createScan({
   state,
@@ -59,8 +59,11 @@ export function createScan({
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const found = await resp.json();
     // f.box is in tile-local coordinates; translate back to full-image space.
+    // Rounded to 2 decimals (see geometry.js's round2): the backend's own
+    // coordinate scaling leaves long floating-point tails that carry no real
+    // signal at this app's resolutions.
     return found.map((f) => ({
-      box: f.box.map(([x, y]) => [x + x0, y + y0]),
+      box: f.box.map(([x, y]) => [round2(x + x0), round2(y + y0)]),
       text: f.text,
       score: f.score,
     }));

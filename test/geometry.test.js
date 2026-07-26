@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   toSource, toDisplay, pointInPolygon, hitTestBoxes, distance, nearestWithinRadius,
-  boundsOf, overlapArea, cornersOf, resizedBounds, normalizedRectBox,
+  boundsOf, overlapArea, cornersOf, resizedBounds, normalizedRectBox, round2,
 } from "../geometry.js";
 
 test("toSource/toDisplay round-trip at scale 1, no offset", () => {
@@ -181,4 +181,20 @@ test("normalizedRectBox: a drag crossing over its origin is normalized", () => {
 test("normalizedRectBox output round-trips through boundsOf", () => {
   const b = normalizedRectBox({ x0: 30, y0: 5, x1: 12, y1: 40 });
   assert.deepEqual(boundsOf(b), { minX: 12, minY: 5, maxX: 30, maxY: 40 });
+});
+
+test("round2: rounds to 2 decimal places", () => {
+  assert.equal(round2(87.345678901234), 87.35);
+  assert.equal(round2(10), 10);
+  assert.equal(round2(0.005), 0.01); // Math.round's half-away-from-zero at the boundary
+});
+
+test("round2: negative coordinates round correctly (a box can extend past the image edge)", () => {
+  assert.equal(round2(-3.456), -3.46);
+});
+
+test("normalizedRectBox: strips long floating-point tails from view-transform division", () => {
+  // The kind of value toSource()'s division by view.scale actually produces.
+  const b = normalizedRectBox({ x0: 10.123456789, y0: 5.987654321, x1: 20.000001, y1: 15.999999 });
+  assert.deepEqual(b, [[10.12, 5.99], [20, 5.99], [20, 16], [10.12, 16]]);
 });
