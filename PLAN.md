@@ -276,7 +276,34 @@ ledger entry, no rework of anything above.
       and the "Clear ▾" menu are the follow-up step below, reusing this logic rather than
       redoing it. The file input still accepts one file; multi-file + the ledger-reattach flow
       is the next step.
-- [ ] Multi-file input + the batch-load flow (hash, ledger reattach, purge, persist).
+- [x] Multi-file input (`ocr.html`'s file input gained `multiple`) + the real batch-load flow
+      (`ocr.js`'s fileInput handler): decode + hash every selected file in parallel
+      (`loadOneFile()`), look up existing ledger entries in one batch (`loadLabelsFor()`),
+      reattach `rotation`/`detections` for any sha256 hit and start blank otherwise, then
+      `replaceImages()` (purges the outgoing batch's bytes, since it clears+repopulates the
+      whole `images` store in one transaction) → `persistBatchMeta()` → `persistLabel()` for
+      every image. A file that fails to decode is dropped with the rest still loading, rather
+      than aborting the whole selection; a status message reports how many images loaded, how
+      many reattached previous ground truth, and how many files were unreadable.
+      New `test/browser/multi-image.spec.mjs` (3 tests): loading several files at once produces
+      one batch in selection order with the first active; re-selecting a previously-loaded
+      image (same content, so the same sha256) reattaches its box/label even after an
+      intervening batch swap purged its pixels; loading a new batch removes the outgoing
+      image's bytes from the `images` store while its `labels` entry survives. Both new
+      mechanisms (reattach, purge) mutation-tested.
+      **A real bug found via a standalone repro script** (not a unit/browser test — an ad hoc
+      `_repro.mjs` dumping raw IndexedDB state at each step, written when a test failed in a
+      confusing way and speculation wasn't converging): `test/browser/fixtures.mjs`'s
+      `loadSyntheticPhoto()`/`loadSyntheticPhotos()` waited for "is `batch.active` truthy" (or
+      "does `order.length` match") rather than confirming *this specific* load's own data had
+      landed -- a second load in the same test could see the *first* load's already-truthy
+      state and proceed before its own writes completed. `readImageName()` was resolving `null`
+      for the second-loaded image because `batch.current` still pointed at the first image's
+      hash while the `images` store had already been replaced with the second's. Fixed by
+      waiting for the freshly-loaded image's own filename to appear in its ledger entry (a
+      value that can only be true once *that* load's `persistBatchMeta`/`persistLabel` calls --
+      awaited in sequence after `replaceImages` in `ocr.js` -- have actually resolved).
+      **Verified:** 98 unit + 44 browser tests green, run twice for stability.
 - [ ] The five Clear-family operations + the "Clear ▾" menu + the standalone "Finish batch"
       button.
 - [ ] Image-switcher UI: list the images in the current batch, pick which to view/edit

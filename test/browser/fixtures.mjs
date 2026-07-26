@@ -58,17 +58,96 @@ async function loadSyntheticPhoto(
   // seed detections by sha256, see list-actions/interaction/label-editing
   // specs) would otherwise race that write, so wait for it to actually land
   // rather than trusting the visual cue alone.
+  //
+  // Checks the *active* label's filename matches this call's own `name`, not
+  // just "batch.active is truthy": a second loadSyntheticPhoto() in the same
+  // test would otherwise see the *previous* call's already-truthy `active`
+  // and return immediately, before this call's own persistBatchMeta()/
+  // persistLabel() writes have actually landed -- a real bug this exact
+  // check caught once (see PLAN.md/session notes: readImageName() resolved
+  // null for a second-loaded photo because the wait resolved on stale data).
+  // ocr.js awaits replaceImages() -> persistBatchMeta() -> persistLabel() in
+  // that order, so the label write landing guarantees the other two did too.
   await page.waitFor(`
     new Promise((resolve, reject) => {
       const req = indexedDB.open("field-guide-scan", 2);
       req.onsuccess = () => {
-        const g = req.result.transaction("batch", "readonly").objectStore("batch").get("current");
-        g.onsuccess = () => resolve(!!g.result?.active);
-        g.onerror = () => reject(g.error);
+        const db = req.result;
+        const bg = db.transaction("batch", "readonly").objectStore("batch").get("current");
+        bg.onsuccess = () => {
+          const active = bg.result?.active;
+          if (!active) { resolve(false); return; }
+          const lg = db.transaction("labels", "readonly").objectStore("labels").get(active);
+          lg.onsuccess = () => resolve(lg.result?.filename === ${JSON.stringify(name)});
+          lg.onerror = () => reject(lg.error);
+        };
+        bg.onerror = () => reject(bg.error);
       };
       req.onerror = () => reject(req.error);
     })
   `, "batch to be persisted");
+}
+
+// Selects several photos in one go, as a real multi-file dialog selection
+// would (one DataTransfer holding every File, one change event) -- unlike
+// calling loadSyntheticPhoto() repeatedly, which is N separate batch loads,
+// each replacing the last. `entries` is `[{ text, name, w, h }, …]`; unset
+// fields fall back to loadSyntheticPhoto()'s own defaults.
+async function loadSyntheticPhotos(page, entries) {
+  await page.evaluate(`
+    (async () => {
+      const entries = ${JSON.stringify(entries)};
+      const dt = new DataTransfer();
+      for (const e of entries) {
+        const c = document.createElement("canvas");
+        c.width = e.w ?? ${DEFAULT_PHOTO_W};
+        c.height = e.h ?? ${DEFAULT_PHOTO_H};
+        const g = c.getContext("2d");
+        g.fillStyle = "#fff";
+        g.fillRect(0, 0, c.width, c.height);
+        g.fillStyle = "#000";
+        g.font = "48px sans-serif";
+        g.fillText(e.text ?? "M7270", 40, 90);
+        const blob = await new Promise((r) => c.toBlob(r, "image/png"));
+        dt.items.add(new File([blob], e.name ?? "synthetic.png", { type: "image/png" }));
+      }
+      const input = document.getElementById("file");
+      input.files = dt.files;
+      input.dispatchEvent(new Event("change"));
+    })()
+  `);
+  await page.waitFor(`!document.getElementById("runOcr").disabled`, "photos to load");
+  // See loadSyntheticPhoto()'s comment for why this checks actual filenames,
+  // not just order.length: a length match alone could coincidentally be true
+  // from a *previous* load already in the DB (e.g. two 3-image batches in the
+  // same test), resolving before this call's own writes land. Checking the
+  // full, in-order filename list rules that out.
+  const expectedNames = JSON.stringify(entries.map((e) => e.name ?? "synthetic.png"));
+  await page.waitFor(`
+    new Promise((resolve, reject) => {
+      const req = indexedDB.open("field-guide-scan", 2);
+      req.onsuccess = () => {
+        const db = req.result;
+        const bg = db.transaction("batch", "readonly").objectStore("batch").get("current");
+        bg.onsuccess = async () => {
+          const order = bg.result?.order ?? [];
+          const expected = ${expectedNames};
+          if (order.length !== expected.length) { resolve(false); return; }
+          const store = db.transaction("labels", "readonly").objectStore("labels");
+          try {
+            const names = await Promise.all(order.map((sha) => new Promise((res, rej) => {
+              const g = store.get(sha);
+              g.onsuccess = () => res(g.result?.filename);
+              g.onerror = () => rej(g.error);
+            })));
+            resolve(JSON.stringify(names) === JSON.stringify(expected));
+          } catch (err) { reject(err); }
+        };
+        bg.onerror = () => reject(bg.error);
+      };
+      req.onerror = () => reject(req.error);
+    })
+  `, "batch to be persisted with every image");
 }
 
 async function stageRect(page) {
@@ -163,6 +242,57 @@ async function readImageName(page) {
   `);
 }
 
+// Reads every image currently in the batch, in its saved order --
+// `[{ sha256, filename, rotation, detections }, …]`. Unlike readState() (the
+// *active* image only), this is for asserting on the whole batch: composition,
+// order, and each image's own ground truth.
+async function readAllLabels(page) {
+  return JSON.parse(await page.evaluate(`
+    new Promise((resolve, reject) => {
+      const req = indexedDB.open("field-guide-scan", 2);
+      req.onsuccess = () => {
+        const db = req.result;
+        const bg = db.transaction("batch", "readonly").objectStore("batch").get("current");
+        bg.onsuccess = () => {
+          const order = bg.result?.order ?? [];
+          const store = db.transaction("labels", "readonly").objectStore("labels");
+          const results = new Array(order.length);
+          let remaining = order.length;
+          if (remaining === 0) { resolve(JSON.stringify([])); return; }
+          order.forEach((sha256, i) => {
+            const g = store.get(sha256);
+            g.onsuccess = () => {
+              results[i] = { sha256, ...g.result };
+              if (--remaining === 0) resolve(JSON.stringify(results));
+            };
+            g.onerror = () => reject(g.error);
+          });
+        };
+        bg.onerror = () => reject(bg.error);
+      };
+      req.onerror = () => reject(req.error);
+    })
+  `));
+}
+
+// The sha256 keys currently holding image bytes in the `images` store --
+// bounded to the current batch's images only (replaceImages() replaces this
+// store wholesale on every batch change), which is what keeps storage from
+// accumulating across batches (see PLAN.md, "Multi-image workflow").
+async function readImageStoreKeys(page) {
+  return page.evaluate(`
+    new Promise((resolve, reject) => {
+      const req = indexedDB.open("field-guide-scan", 2);
+      req.onsuccess = () => {
+        const g = req.result.transaction("images", "readonly").objectStore("images").getAllKeys();
+        g.onsuccess = () => resolve(g.result);
+        g.onerror = () => reject(g.error);
+      };
+      req.onerror = () => reject(req.error);
+    })
+  `);
+}
+
 function boundsOf(box) {
   return {
     minX: Math.min(...box.map((p) => p[0])), maxX: Math.max(...box.map((p) => p[0])),
@@ -171,6 +301,6 @@ function boundsOf(box) {
 }
 
 export {
-  bootApp, loadSyntheticPhoto, stageRect, dragFrac, clickFrac, scanIdle,
-  readState, readImageName, boundsOf,
+  bootApp, loadSyntheticPhoto, loadSyntheticPhotos, stageRect, dragFrac, clickFrac, scanIdle,
+  readState, readImageName, readAllLabels, readImageStoreKeys, boundsOf,
 };

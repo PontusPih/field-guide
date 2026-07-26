@@ -35,7 +35,8 @@ import { resolveTileSize, TILE_SIZE_STORAGE_KEY } from "./tiling.js";
 import { resolveBackendUrl, BACKEND_URL_STORAGE_KEY, LOCALHOST_NAMES } from "./backend-config.js";
 import { sha256Hex } from "./hashing.js";
 import {
-  loadBatch, persistLabel, persistBatchMeta, replaceImages, clearStoredBatch, deleteLabels,
+  loadBatch, loadLabelsFor, persistLabel, persistBatchMeta, replaceImages, clearStoredBatch,
+  deleteLabels,
 } from "./session-store.js";
 import { createScan } from "./scan.js";
 import { createCanvasView } from "./canvas-view.js";
@@ -580,44 +581,79 @@ pruneEmptyBtn.addEventListener("click", () => {
   redraw();
 });
 
-// Single-file for now: a batch of exactly one, running on the new schema.
-// Multi-file selection, folding the outgoing batch into the ledger, and
-// reattaching ground truth for images the ledger already knows about are a
-// follow-up step (PLAN.md, "Multi-image workflow").
-fileInput.addEventListener("change", async () => {
-  const file = fileInput.files[0];
-  if (!file) return;
-  if (state.scanAbortController) state.scanAbortController.abort();
-
+// Decodes one File into an <img> and computes its content hash in parallel
+// (independent work -- decoding never needs the hash or vice versa). Returns
+// { file, img, ok, sha256 }; ok is false if the browser couldn't decode it as
+// an image, in which case sha256 was still computed but is simply unused.
+async function loadOneFile(file) {
   const url = URL.createObjectURL(file);
   const img = new Image();
-  const ok = await new Promise((resolve) => {
-    img.onload = () => resolve(true);
-    img.onerror = () => resolve(false);
-    img.src = url;
-  });
+  const [ok, sha256] = await Promise.all([
+    new Promise((resolve) => {
+      img.onload = () => resolve(true);
+      img.onerror = () => resolve(false);
+      img.src = url;
+    }),
+    sha256Hex(file),
+  ]);
   URL.revokeObjectURL(url);
-  if (!ok) return;
+  return { file, img, ok, sha256 };
+}
 
-  const image = newImageEntry({
-    id: state.nextImageId++,
-    sha256: null, // filled in below once hashing resolves
-    fileName: file.name,
-    img,
-    rotation: 0,
-    detections: [],
+// Loading a new batch replaces the working one entirely (PLAN.md,
+// "Multi-image workflow"): the outgoing images' pixels are dropped from
+// IndexedDB (replaceImages() below overwrites the whole `images` store), but
+// their ground truth is untouched in the permanent `labels` ledger -- nothing
+// explicitly "folds" it there, because persistLabel() already keeps every
+// image's entry current the instant its own edit happens, so there is
+// nothing left to flush in bulk at this point. A file whose content hash
+// already has a ledger entry (the same photo re-selected, in this batch or a
+// past one) reattaches that entry's rotation/detections instead of starting
+// blank -- the mechanism that makes it safe to re-select a growing folder
+// (e.g. hasso/ with more photos added) without losing prior labeling work.
+fileInput.addEventListener("change", async () => {
+  const files = [...fileInput.files];
+  if (files.length === 0) return;
+  if (state.scanAbortController) state.scanAbortController.abort();
+
+  const loaded = await Promise.all(files.map(loadOneFile));
+  const decoded = loaded.filter((f) => f.ok);
+  if (decoded.length === 0) return; // nothing usable -- leave the previous batch as it was
+
+  const existingLabels = await loadLabelsFor(decoded.map((f) => f.sha256));
+
+  const images = decoded.map((f) => {
+    const existing = existingLabels.get(f.sha256);
+    return newImageEntry({
+      id: state.nextImageId++,
+      sha256: f.sha256,
+      fileName: f.file.name,
+      img: f.img,
+      rotation: existing?.rotation ?? 0,
+      detections: existing?.detections ?? [],
+    });
   });
-  state.images = [image]; // replaces whatever batch was loaded before
-  state.activeId = image.id;
-  state.lastStatusMessage = null; // new photo: don't carry over the previous one's status
+
+  state.images = images;
+  state.activeId = images[0].id;
+  state.lastStatusMessage = null; // new batch: don't carry over the previous one's status
   renderActiveView(); // recomputes full/view/minScale and calls redraw()
   updateButtons();
 
-  const sha256 = await sha256Hex(file);
-  image.sha256 = sha256;
-  await replaceImages([{ sha256, blob: file }]);
-  await persistBatchMeta({ order: [sha256], active: sha256 });
-  await persistLabel(sha256, { filename: image.fileName, rotation: image.rotation, detections: image.detections });
+  await replaceImages(decoded.map((f) => ({ sha256: f.sha256, blob: f.file })));
+  await persistBatchMeta({ order: images.map((img) => img.sha256), active: images[0].sha256 });
+  await Promise.all(images.map((img) => persistLabel(img.sha256, {
+    filename: img.fileName, rotation: img.rotation, detections: img.detections,
+  })));
+
+  const reattachedCount = decoded.filter((f) => existingLabels.has(f.sha256)).length;
+  const parts = [];
+  if (images.length > 1 || reattachedCount > 0) {
+    parts.push(`Loaded ${images.length} image(s)`);
+    if (reattachedCount > 0) parts.push(`${reattachedCount} matched previous ground truth`);
+  }
+  if (decoded.length < loaded.length) parts.push(`${loaded.length - decoded.length} file(s) could not be read as images`);
+  if (parts.length > 0) setStatusMessage(parts.join(" — "));
 });
 
 // Hands every labelled detection's text (of the active image) to guide.js via

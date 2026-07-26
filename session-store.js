@@ -155,6 +155,21 @@ async function loadBatch() {
   }
 }
 
+// Reads existing ledger entries for a set of images about to be loaded, so a
+// previously-labeled image (by content hash) can reattach its ground truth
+// even though its pixels are freshly re-selected from disk. Returns a Map
+// from sha256 to `{ filename, rotation, detections }` -- only for the sha256s
+// that already have an entry; one with no prior ground truth is simply
+// absent from the Map, which the caller reads as "start fresh."
+async function loadLabelsFor(sha256List) {
+  const found = await dbGetMany(LABELS_STORE, sha256List);
+  const map = new Map();
+  sha256List.forEach((sha256, i) => {
+    if (found[i] !== undefined) map.set(sha256, found[i]);
+  });
+  return map;
+}
+
 // Upserts one image's ground truth: `label` is `{ filename, rotation,
 // detections }`. Called on every edit to whichever image is active -- only
 // the active image can be edited, so every image's entry is always current
@@ -225,6 +240,6 @@ function clearAllLabels() {
 }
 
 export {
-  loadBatch, persistLabel, persistBatchMeta, replaceImages, deleteImage,
+  loadBatch, loadLabelsFor, persistLabel, persistBatchMeta, replaceImages, deleteImage,
   clearStoredBatch, deleteLabels, clearAllLabels,
 };
