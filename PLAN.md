@@ -148,13 +148,17 @@ spending cap/kill-switch), not pay-per-use exposure.
 - [ ] Fuzzy-match recognized text against the real ~1464 module numbers in
       `field-guide-02.txt` (revive the Tesseract POC's Levenshtein approach) — catch
       near-misses and filter junk before anything reaches the user.
-- [ ] Let the user edit a found box's recognized text directly — a human eye can often
-      correct a box RapidOCR found but slightly misread (one wrong character) without
-      needing to redraw/rescan it. Not yet designed: the edit UI (inline in the results
-      list vs. a field on the box's detail/hover state), whether an edited detection's
-      `source` should count as "manual"/trusted for the `guide.js` handoff, and whether
-      `score` should be cleared/flagged once text has been hand-edited (it no longer
-      reflects what's actually displayed).
+- [x] Let the user edit a found box's recognized text directly. Shipped as `results-list.js`'s
+      inline label editor: clicking a row's label swaps it for a text input (Enter commits,
+      Escape/blur cancels); committing a genuine change sets `manual: true` (a new detection
+      state, checked first everywhere — `detections.js`) and clears `score`/`attempted`, so a
+      hand-corrected box is authoritative and distinct from an OCR result, both visually (✎
+      glyph, own colour) and for the `guide.js` handoff (counts as labelled either way).
+      Re-entering the *same* text the box already showed is treated as confirming an OCR read
+      verbatim, not an edit — the score is left alone rather than being needlessly cleared.
+      Also sticky through further edits/rescans: moving/resizing a manual box, or a later
+      rescan, leaves its hand-entered text untouched (the box is only an approximate location
+      once labelled by hand). Covered by `test/browser/label-editing.spec.mjs`.
 
 **Multi-image workflow**
 
@@ -426,6 +430,50 @@ ledger entry, no rework of anything above.
       for this bullet, before it was scoped down to "union the text"). Would need a richer
       handoff payload than the plain newline list `guide.js` parses today, so it's a `guide.js`
       change too, not just `ocr.js`'s. Not yet designed in detail.
+
+**Next up — scan tool UX**, flagged from real use of the multi-image workflow on `hasso/`'s
+221 images. Not yet designed in detail; ordered roughly by how soon they'll bite.
+- [ ] **Browsing/selecting an image doesn't scale past a handful.** The image-switcher
+      renders one chip per `state.images` entry in a row above `#workspace`; with 200+ images
+      that's 200+ chips to hunt through. Simplest fix floated: previous/next buttons stepping
+      through `state.images` in order, alongside the chip row (or instead of it — may also want
+      paging/virtualization for the chips themselves). Not yet designed in detail.
+- [ ] **Drop image: move off the "Clear ▾" menu onto an X near the canvas; skip the confirm
+      for never-scanned images.** Currently one of the four operations behind "Clear ▾" (see
+      the five-operation table above), always confirmed first. Two changes floated: (1) an
+      always-visible X near the canvas/image-switcher instead of a menu item — dropping one
+      image out of a large batch is routine, not a rare destructive action; (2) skip the
+      confirmation dialog when the image being dropped was never scanned (no boxes drawn) —
+      nothing is lost, so nothing to confirm.
+- [ ] **Clarify Browse / Finish batch / Clear batch, and support adding images to an ongoing
+      batch.** The three don't yet read as one coherent story: "Browse" (the file input)
+      always starts a brand-new batch — `replaceImages()` purges the outgoing one wholesale,
+      in the same transaction, with no way to add more files to what's already loaded; "Finish
+      batch" and "Clear batch" both empty the batch and differ only in whether the ledger is
+      left alone or wiped (see the five-operation table above), a distinction that isn't
+      obvious from the names alone. Wanted: a way to add photos to an in-progress batch
+      instead of only ever replacing it outright.
+      **Author's simplification proposal, floated for discussion:** rename "Finish batch" to
+      "Clear loaded images" — unloads the batch, saved boxes untouched, still no confirmation
+      needed (nothing is lost). Question whether "Clear batch" (wipe saved boxes, scoped to
+      just this batch) is worth keeping as its own tier: redoing a whole batch's boxes is
+      already covered by using "Clear image" per image, one at a time, so a bulk batch-scoped
+      ledger wipe may not earn its place as a separate operation from "Clear all." Leaning
+      toward three operations instead of five: "Clear image" (per-image boxes, unchanged),
+      "Clear loaded images" (unload only, was "Finish batch"), and "Clear saved boxes" (wipe
+      the whole ledger, was "Clear all") — dropping "Clear batch" as the redundant middle
+      tier. Still needs discussion/experimentation, in particular whether losing a
+      batch-scoped (rather than whole-ledger) bulk wipe is actually fine in practice. Needs
+      design work regardless of where this lands — likely touches `replaceImages()` and the
+      file input's handler in `ocr.js`.
+- [ ] **"Ground truth" should not appear in code.** The term leaked from `groundtruth.md`'s
+      design vocabulary into comments across `hashing.js`/`session-store.js`/`ocr.js`, and
+      into two user-facing `confirm()` dialog strings in `ocr.js` (Drop image, Clear batch) —
+      ML jargon a labeler shouldn't need to know. Sweep: reword those confirm() strings in
+      plain end-user terms (e.g. "saved labels for this image"), and reword the comments to
+      describe the mechanism (the permanent `labels` ledger, content-hash reattachment)
+      rather than naming the ML concept it happens to serve. `groundtruth.md` itself keeps the
+      term — it's the design doc for the eval-harness concept, not code.
 
 **Integration**
 - [x] Decide where this lives in the shipped app — `index.html` is now a landing page
@@ -767,19 +815,18 @@ would hit the ~700MB ceiling directly. Implemented (`ocr.js`, `tiling.js`,
          is too subtle to spot at a glance; make it clearly distinct (e.g. a background tint
          or border, not just font-weight).
       Not yet designed in detail.
-- [ ] **Selecting a box scrolls the whole page, not just the results list.** The
-      scroll-into-view fix (this session, `results-list.js`) calls
+- [x] **Selecting a box scrolls the whole page, not just the results list.** Was calling
       `li.scrollIntoView({ block: "nearest", inline: "nearest" })`, which walks *every*
       scrollable ancestor of the row, not just `#resultsPanel` — if the page itself is
       scrolled (the tool sits below the fold), selecting a box whose row needs scrolling
-      within the panel also drags the whole page's scroll position along with it.
-      `block`/`inline: "nearest"` only controls alignment *within* each ancestor it touches;
-      it doesn't limit which ancestors get scrolled at all. Fix direction: compute and set
-      `#resultsPanel.scrollTop` directly from the row's `offsetTop`/`offsetHeight` against the
-      panel's own `scrollTop`/`clientHeight`, rather than relying on the browser's native
-      ancestor-walking `scrollIntoView()`. Bumps into the same "make the selected row clearly
-      distinct" need as item 4 above (bold text alone is easy to miss when the list just
-      jumped) — worth doing both in the same pass.
+      within the panel also dragged the whole page's scroll position along with it.
+      Fixed as a side effect of the image-switcher task (see "Multi-image workflow" above):
+      `results-list.js` now computes `#resultsPanel.scrollTop` directly from the row's
+      `getBoundingClientRect()` against the panel's own, rather than the browser's native
+      ancestor-walking `scrollIntoView()`. Still open: the "make the selected row clearly
+      distinct" need from item 4 above (bold text alone is easy to miss) — not done in the
+      same pass after all, since the scroll fix landed separately, driven by a real test
+      needing it rather than this bullet.
 
 **Benchmarks**
 Raw data behind the design above, kept for reference. All measured on this dev

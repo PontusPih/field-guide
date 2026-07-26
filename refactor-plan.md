@@ -506,7 +506,7 @@ and its rationale aren't lost. Revisit before the next structural change to `ocr
 
 ## Step 14 — tidy the composition root: declarations, then wiring
 
-- [ ] **Change.** After step 13, `ocr.js`'s top level interleaves two different jobs —
+- [x] **Change.** After step 13, `ocr.js`'s top level interleaves two different jobs —
       *defining* functions and *executing* the wiring that instantiates the modules and
       attaches listeners. A module body is JS's only entry point (there is no `main`), so
       this band is the closest thing to one, and reading it top-to-bottom currently mixes
@@ -519,12 +519,13 @@ and its rationale aren't lost. Revisit before the next structural change to `ocr
       hoist, so band 5 can sit above the band-6 consts it references; every band-5 function is
       only *invoked* from a band-6 listener or `restoreSession()`, by which point every factory
       const is initialised — the same temporal-dead-zone reasoning steps 11–13 already relied on.
-- [ ] **Verify.** `node --check ocr.js` clean; `npm test` 85/85; `npm run test:browser` 32/32.
-      A pure move, so any dropped or mis-ordered reference surfaces as a `ReferenceError` the
-      specs' `consoleErrors` assertions catch, or as a parse failure under `node --check`.
-- [ ] **Consider.** Whether to keep the light section-banner comments the regroup introduces
-      (they name the bands, which is the readability the step is for) or leave the bands to
-      speak for themselves.
+- [x] **Verify.** `node --check ocr.js` clean; `npm test` 85/85; `npm run test:browser` 32/32
+      at the time this landed. The band structure has held up since through all of the
+      multi-image work (a `Batch lifecycle` band was added alongside the original six as that
+      feature grew) — still intact as of the six-step multi-image effort's completion.
+- [x] **Consider.** Resolved: kept the section-banner comments (`// ─── Config and constants
+      ───`, etc.) — they're what makes the bands legible at a glance from a skim, which was
+      the whole point of the regroup.
 
 ## Related backlog
 
